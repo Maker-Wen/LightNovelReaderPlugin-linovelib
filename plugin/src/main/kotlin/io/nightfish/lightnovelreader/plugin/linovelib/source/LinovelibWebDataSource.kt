@@ -42,7 +42,7 @@ import java.io.IOException
 class LinovelibWebDataSource(
     private val context: Context
 ) : WebBookDataSource {
-    private val parser = LinovelibHtmlParser(LinovelibChineseConverter::toTraditional)
+    private val parser = LinovelibHtmlParser(LinovelibChineseConverter::toSimplified)
     private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
     private val offlineStateFlow = MutableStateFlow(true)
