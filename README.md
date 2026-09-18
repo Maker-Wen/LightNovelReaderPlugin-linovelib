@@ -10,13 +10,22 @@
 [![LightNovelReader](https://img.shields.io/badge/LightNovelReader-plugin-blue)](https://github.com/dmzz-yyhyy/LightNovelReader)
 [![Plugin API](https://img.shields.io/badge/Plugin%20API-2-orange)]()
 [![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)]()
-[![Releases](https://img.shields.io/badge/download-Releases-blue?logo=github)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
+[![Release](https://img.shields.io/github/v/release/Maker-Wen/LightNovelReaderPlugin-linovelib?include_prereleases&label=release)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
+[![Downloads](https://img.shields.io/github/downloads/Maker-Wen/LightNovelReaderPlugin-linovelib/total?label=downloads)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 
 ## 下载
 
-从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 获取 `*.apk.lnrp`。
+最新版本：[v1.1.2-simplified](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/tag/v1.1.2-simplified)
 
-当前仓库暂未发布 Release 产物，可以按下方[构建](#构建)步骤自行生成。
+直接下载：[Linovelib-Simplified-Standalone-1.1.2.apk.lnrp](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/download/v1.1.2-simplified/Linovelib-Simplified-Standalone-1.1.2.apk.lnrp)
+
+SHA-256：
+
+```text
+024593837c268d1bcff97a84cec4765d55e783bdbfbbe029aacf08d126f71df5
+```
+
+也可以按下方[构建](#构建)步骤自行生成。
 
 ## 功能
 
@@ -50,7 +59,7 @@
 
 ## 安装
 
-1. 从 Releases（如果已发布）获取 `*.apk.lnrp`，或按下方构建步骤自行生成
+1. 从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载 `*.apk.lnrp`
 2. 使用 LightNovelReader 打开该文件
 3. 在「扩展插件」中启用 `Linovelib 简体`
 4. 在数据源中选择 `Linovelib 简体`
