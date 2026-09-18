@@ -7,15 +7,15 @@ import io.nightfish.lightnovelreader.api.plugin.Plugin
 @Suppress("unused")
 @Plugin(
     version = BuildConfig.VERSION_CODE,
-    name = "Linovelib 简体",
+    name = "Linovelib",
     versionName = BuildConfig.VERSION_NAME,
     author = "LightNovelReader contributor",
-    description = "tw.linovelib.com 简体输出数据源",
+    description = "Linovelib 数据源",
     updateUrl = "",
     apiVersion = 2
 )
 class LinovelibPlugin : LightNovelReaderPlugin {
     override fun onLoad() {
-        Log.i("LinovelibPlugin", "Linovelib 简体 plugin loaded")
+        Log.i("LinovelibPlugin", "Linovelib plugin loaded")
     }
 }
