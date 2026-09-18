@@ -41,7 +41,7 @@ SHA-256 见 Release notes。
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib_simplified` |
 | 数据源 id | `linovelib_tw` | `linovelib_simplified` |
 | 文字转换 | `toTraditional` | `toSimplified` |
-| 版本名 | 1.1.2 | 1.1.2-simplified |
+| 版本名 | 1.1.2 | 1.1.2 |
 
 因为 applicationId 和数据源 id 都不同，本项目可以和上游的 **Linovelib TW** 插件同时安装、同时使用。
 
