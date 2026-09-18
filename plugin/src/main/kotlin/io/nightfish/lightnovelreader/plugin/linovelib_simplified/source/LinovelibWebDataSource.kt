@@ -36,7 +36,7 @@ import java.io.IOException
 
 @Suppress("unused")
 @WebDataSource(
-    name = "Linovelib",
+    name = "Linovelib 简体",
     provider = "tw.linovelib.com"
 )
 class LinovelibWebDataSource(

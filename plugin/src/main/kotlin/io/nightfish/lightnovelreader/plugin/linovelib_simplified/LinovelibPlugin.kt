@@ -7,10 +7,10 @@ import io.nightfish.lightnovelreader.api.plugin.Plugin
 @Suppress("unused")
 @Plugin(
     version = BuildConfig.VERSION_CODE,
-    name = "Linovelib",
+    name = "Linovelib 简体",
     versionName = BuildConfig.VERSION_NAME,
     author = "LightNovelReader contributor",
-    description = "Linovelib 数据源",
+    description = "Linovelib 简体数据源",
     updateUrl = "",
     apiVersion = 2
 )
