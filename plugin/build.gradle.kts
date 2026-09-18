@@ -2,6 +2,17 @@ import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 import java.util.zip.ZipFile
 
+val releaseKeystorePath = System.getenv("SIGNING_KEYSTORE_PATH")
+val releaseStorePassword = System.getenv("SIGNING_STORE_PASSWORD")
+val releaseKeyAlias = System.getenv("SIGNING_KEY_ALIAS")
+val releaseKeyPassword = System.getenv("SIGNING_KEY_PASSWORD")
+val hasReleaseSigning = listOf(
+    releaseKeystorePath,
+    releaseStorePassword,
+    releaseKeyAlias,
+    releaseKeyPassword,
+).all { !it.isNullOrBlank() }
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.compose.compiler)
@@ -26,9 +37,26 @@ android {
         buildConfig = true
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath!!)
+                storePassword = releaseStorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            // CI provides SIGNING_* env vars. Local builds fall back to debug signing.
+            signingConfig = if (hasReleaseSigning) {
+                signingConfigs.getByName("release")
+            } else {
+                signingConfigs.getByName("debug")
+            }
         }
     }
 

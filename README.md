@@ -19,11 +19,7 @@
 
 直接下载：[Linovelib-Simplified-Standalone-1.1.2.apk.lnrp](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/download/v1.1.2-simplified/Linovelib-Simplified-Standalone-1.1.2.apk.lnrp)
 
-SHA-256：
-
-```text
-024593837c268d1bcff97a84cec4765d55e783bdbfbbe029aacf08d126f71df5
-```
+SHA-256 见 Release notes。
 
 也可以按下方[构建](#构建)步骤自行生成。
 
@@ -73,23 +69,33 @@ SHA-256：
 - JDK 17
 - Android SDK 36
 
-构建：
+构建 debug：
 
 ```bash
 ./gradlew :plugin:assembleDebug
+```
+
+构建 release：
+
+```bash
+./gradlew :plugin:assembleRelease
 ```
 
 产物：
 
 ```text
 plugin/build/outputs/apk/debug/plugin-debug.apk.lnrp
+plugin/build/outputs/apk/release/plugin-release.apk.lnrp
 ```
+
+Release 签名通过 `SIGNING_KEYSTORE_PATH`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD` 环境变量注入；本地不提供这些变量时会回退到 debug 签名。
 
 ## 说明
 
 - 本插件只修改繁简转换方向和插件标识，不修改原插件的图片、缓存、搜索和章节处理逻辑。
 - 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
 - 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。
+- Release 产物使用独立的 release keystore 签名。
 
 ## 致谢
 
