@@ -6,6 +6,18 @@
 
 > 原项目版权归原作者所有。本项目继续使用 Apache License 2.0，详见 [LICENSE](LICENSE)。
 
+[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![LightNovelReader](https://img.shields.io/badge/LightNovelReader-plugin-blue)](https://github.com/dmzz-yyhyy/LightNovelReader)
+[![Plugin API](https://img.shields.io/badge/Plugin%20API-2-orange)]()
+[![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)]()
+[![Releases](https://img.shields.io/badge/download-Releases-blue?logo=github)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
+
+## 下载
+
+从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 获取 `*.apk.lnrp`。
+
+当前仓库暂未发布 Release 产物，可以按下方[构建](#构建)步骤自行生成。
+
 ## 功能
 
 - 支持 Linovelib 的探索、排行榜和完本页面
@@ -69,7 +81,6 @@ plugin/build/outputs/apk/debug/plugin-debug.apk.lnrp
 - 本插件只修改繁简转换方向和插件标识，不修改原插件的图片、缓存、搜索和章节处理逻辑。
 - 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
 - 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。
-- 当前仓库暂未提供 Release 产物，需要按下方构建步骤自行生成 `.apk.lnrp`。
 
 ## 致谢
 
