@@ -38,7 +38,7 @@
 
 ## 安装
 
-1. 在 Releases 或本仓库构建产物中获取 `*.apk.lnrp`
+1. 从 Releases（如果已发布）获取 `*.apk.lnrp`，或按下方构建步骤自行生成
 2. 使用 LightNovelReader 打开该文件
 3. 在「扩展插件」中启用 `Linovelib 简体`
 4. 在数据源中选择 `Linovelib 简体`
@@ -69,7 +69,7 @@ plugin/build/outputs/apk/debug/plugin-debug.apk.lnrp
 - 本插件只修改繁简转换方向和插件标识，不修改原插件的图片、缓存、搜索和章节处理逻辑。
 - 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
 - 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。
-- 如果只需要单个数据源，也可以参考本仓库的 `codex/linovelib-simplified-standalone` 分支。
+- 当前仓库暂未提供 Release 产物，需要按下方构建步骤自行生成 `.apk.lnrp`。
 
 ## 致谢
 
