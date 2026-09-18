@@ -69,26 +69,23 @@ SHA-256 见 Release notes。
 - JDK 17
 - Android SDK 36
 
-构建 debug：
-
-```bash
-./gradlew :plugin:assembleDebug
-```
-
 构建 release：
 
 ```bash
+export SIGNING_KEYSTORE_PATH=/path/to/release.keystore
+export SIGNING_STORE_PASSWORD=...
+export SIGNING_KEY_ALIAS=...
+export SIGNING_KEY_PASSWORD=...
 ./gradlew :plugin:assembleRelease
 ```
 
 产物：
 
 ```text
-plugin/build/outputs/apk/debug/plugin-debug.apk.lnrp
 plugin/build/outputs/apk/release/plugin-release.apk.lnrp
 ```
 
-Release 签名通过 `SIGNING_KEYSTORE_PATH`、`SIGNING_STORE_PASSWORD`、`SIGNING_KEY_ALIAS`、`SIGNING_KEY_PASSWORD` 环境变量注入；本地不提供这些变量时会回退到 debug 签名。
+Release 签名通过上面的四个环境变量注入。未提供签名变量时产物为 unsigned，不能直接安装；GitHub Actions 会自动使用仓库 Secrets 完成签名。
 
 ## 说明
 

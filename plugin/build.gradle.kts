@@ -51,11 +51,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // CI provides SIGNING_* env vars. Local builds fall back to debug signing.
-            signingConfig = if (hasReleaseSigning) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
     }
