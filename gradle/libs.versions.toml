@@ -15,7 +15,8 @@ composeMaterial3 = "1.4.0"
 cxhttp = "1.2.5"
 kotlinSerialization = "1.10.0"
 jsoup = "1.22.1"
-lightnovelreaderApi = "0.3"
+lightnovelreaderApi = "0.2"
+lightnovelreaderHostApi = "0.3"
 lightnovelreaderCompiler = "0.4-SNAPSHOT"
 junit = "4.13.2"
 dom4j = "2.2.0"
@@ -27,6 +28,7 @@ androidx-runtime = { module = "androidx.compose.runtime:runtime", version.ref = 
 jaxen = { module = "jaxen:jaxen", version.ref = "jaxen" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
 lightnovelreader-api = { module = "io.nightfish.lightnovelreader:api", version.ref = "lightnovelreaderApi" }
+lightnovelreader-host-api = { module = "io.nightfish.lightnovelreader:api", version.ref = "lightnovelreaderHostApi" }
 lightnovelreader-compiler = { module = "io.nightfish.lightnovelreader:compiler", version.ref = "lightnovelreaderCompiler" }
 androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationRuntimeKtx" }
 androidx-foundation-layout = { group = "androidx.compose.foundation", name = "foundation-layout", version.ref = "foundationLayout" }

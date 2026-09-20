@@ -8,8 +8,8 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![LightNovelReader](https://img.shields.io/badge/LightNovelReader-plugin-blue)](https://github.com/dmzz-yyhyy/LightNovelReader)
-[![Plugin API](https://img.shields.io/badge/Plugin%20API-3-orange)]()
-[![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)]()
+[![Plugin API](https://img.shields.io/badge/Plugin%20API-2-orange)]()
+[![Android](https://img.shields.io/badge/Android-7%2B-3DDC84?logo=android&logoColor=white)]()
 [![Release](https://img.shields.io/github/v/release/Maker-Wen/LightNovelReaderPlugin-linovelib?include_prereleases&label=release)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 [![Downloads](https://img.shields.io/github/downloads/Maker-Wen/LightNovelReaderPlugin-linovelib/total?label=downloads)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 
@@ -43,12 +43,12 @@
 ## 兼容性
 
 - LightNovelReader 1.2.2
-- Plugin API 3
-- Android 10（API 29）及以上
+- Plugin API 2
+- Android 7（API 24）及以上
 
 本版本使用新的统一包名和数据源 id，不兼容旧版 `Linovelib 简体` 的升级与数据迁移。
 
-搜索词会使用 Android ICU 转换为所选站点偏好的简体或繁体；站点返回的书籍内容保持原文。
+Android 10（API 29）及以上会使用 Android ICU 将搜索词转换为所选站点偏好的简体或繁体；Android 7–9 保持搜索词原文。站点返回的书籍内容保持原文。
 
 ## 安装
 
@@ -89,7 +89,7 @@ Release 签名通过上面的四个环境变量注入。未提供签名变量时
 
 ## 说明
 
-- 本插件保留原插件的图片、搜索和章节处理逻辑，并使用 LightNovelReader 1.2.2 支持的 API 3。
+- 本插件保留原插件的图片、搜索和章节处理逻辑，并使用 LightNovelReader 1.2.2 支持的 API 2。
 - 切换站点会保留书架与阅读进度；已经离线缓存的章节不会自动转换，在线打开后会由所选站点内容刷新。
 - 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
 - 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。

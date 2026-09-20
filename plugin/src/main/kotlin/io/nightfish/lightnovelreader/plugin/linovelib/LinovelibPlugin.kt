@@ -46,7 +46,7 @@ import kotlin.system.exitProcess
     author = "LightNovelReader contributor",
     description = "可切换简体站与繁体站的 Linovelib 数据源",
     updateUrl = "",
-    apiVersion = 3
+    apiVersion = 2
 )
 class LinovelibPlugin(
     private val context: Context

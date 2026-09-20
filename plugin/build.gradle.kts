@@ -26,7 +26,7 @@ android {
 
     defaultConfig {
         applicationId = "io.nightfish.lightnovelreader.plugin.linovelib"
-        minSdk = 29
+        minSdk = 24
         targetSdk = 36
         versionCode = 26
         versionName = "2.0.0"
@@ -181,7 +181,7 @@ dependencies {
     implementation(libs.jsoup)
     implementation(libs.cxhttp)
 
-    // Compile against the API 3 artifact shipped by LightNovelReader 1.2.2.
+    // Compile against the API 2 contract supported by LightNovelReader 1.2.2.
     // Keeping the API on the host side avoids packaging a second copy in the plugin.
     compileOnly(libs.lightnovelreader.api)
     compileOnly(libs.androidx.navigation.runtime.ktx)
@@ -189,5 +189,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.jsoup)
-    testImplementation(libs.lightnovelreader.api)
+    // Tests run against the API exposed by the actual LightNovelReader 1.2.2 host.
+    testImplementation(libs.lightnovelreader.host.api)
 }
