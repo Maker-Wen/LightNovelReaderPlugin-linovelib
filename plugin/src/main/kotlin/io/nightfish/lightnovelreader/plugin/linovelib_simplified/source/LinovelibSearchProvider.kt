@@ -18,8 +18,8 @@ internal class LinovelibSearchProvider(
     override val searchTypes: List<SearchType> = listOf(
         SearchType(
             type = "book",
-            name = "Book".local(),
-            tip = "Enter a book name, book ID, or book page URL".local()
+            name = "综合".local(),
+            tip = "搜索书名、作者、标签".local()
         )
     )
 
