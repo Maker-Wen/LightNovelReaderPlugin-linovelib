@@ -104,7 +104,8 @@ jobs:
 
           - 插件名：`Linovelib`
           - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib`
-          - 数据源 id：`lightnovelreader:linovelib`
+          - 数据源 id：`linovelib.hashCode()`（`-1488977864`）
+          - 兼容 LightNovelReader 1.2.2 / Plugin API 3
           - 支持简体站 / 繁体站切换
           - release 签名构建
           EOF

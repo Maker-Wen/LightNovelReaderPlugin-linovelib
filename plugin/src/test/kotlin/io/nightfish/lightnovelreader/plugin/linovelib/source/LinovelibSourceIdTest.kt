@@ -5,8 +5,7 @@ import org.junit.Test
 
 class LinovelibSourceIdTest {
     @Test
-    fun `identifier uses unified Linovelib id`() {
-        assertEquals("lightnovelreader", LINOVELIB_SOURCE_ID.namespace)
-        assertEquals("linovelib", LINOVELIB_SOURCE_ID.id)
+    fun `API 3 source id uses unified Linovelib name`() {
+        assertEquals("linovelib".hashCode(), LINOVELIB_SOURCE_ID)
     }
 }
