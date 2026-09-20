@@ -21,11 +21,11 @@ plugins {
 }
 
 android {
-    namespace = "io.nightfish.lightnovelreader.plugin.linovelib_simplified"
+    namespace = "io.nightfish.lightnovelreader.plugin.linovelib"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "io.nightfish.lightnovelreader.plugin.linovelib_simplified"
+        applicationId = "io.nightfish.lightnovelreader.plugin.linovelib"
         minSdk = 24
         targetSdk = 36
         versionCode = 26

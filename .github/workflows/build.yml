@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing tag to build and publish'
         required: true
-        default: 'v2.0.0-simplified'
+        default: 'v2.0.0'
       publish:
         description: 'Publish/update the GitHub release'
         type: boolean
@@ -68,13 +68,14 @@ jobs:
         run: |
           TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
-          BASE_VERSION="${VERSION%-simplified}"
+          GRADLE_VERSION=$(awk -F'"' '/versionName = / { print $2; exit }' plugin/build.gradle.kts)
+          [ "$VERSION" = "$GRADLE_VERSION" ] || { echo "tag $VERSION does not match versionName $GRADLE_VERSION" >&2; exit 1; }
           SRC=$(find plugin/build/outputs/apk/release -name '*.apk.lnrp' ! -name '*unsigned*' | head -1)
           if [ -z "$SRC" ]; then
             echo "signed release apk not found" >&2
             exit 1
           fi
-          OUT="Linovelib-Simplified-Standalone-${BASE_VERSION}.apk.lnrp"
+          OUT="Linovelib-${VERSION}.apk.lnrp"
           cp "$SRC" "$OUT"
           SHA=$(sha256sum "$OUT" | awk '{print $1}')
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
@@ -96,24 +97,21 @@ jobs:
           OUT="${{ steps.asset.outputs.out }}"
           SHA="${{ steps.asset.outputs.sha }}"
           VERSION="${TAG#v}"
-          BASE_VERSION="${VERSION%-simplified}"
           cat > release-notes.md <<'EOF'
-          ## Linovelib 简体
+          ## Linovelib
 
-          基于 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib) 的独立简体版。
+          基于 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，支持切换简体站与繁体站。
 
-          - 插件名：`Linovelib 简体`
-          - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib_simplified`
-          - 逻辑数据源 id：`linovelib_simplified`（API 4 保留旧 hash 标识用于迁移）
-          - 文字转换：`toTraditional` -> `toSimplified`
-          - 可以和原版 `Linovelib TW` 同时安装
+          - 插件名：`Linovelib`
+          - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib`
+          - 数据源 id：`lightnovelreader:linovelib`
+          - 支持简体站 / 繁体站切换
           - release 签名构建
-          - Android 10+ 支持 ICU 繁简转换
           EOF
           printf '\nSHA-256: `%s`\n' "$SHA" >> release-notes.md
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Linovelib 简体 $BASE_VERSION" --notes-file release-notes.md
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
           else
-            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib 简体 $BASE_VERSION" --notes-file release-notes.md
+            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
           fi
