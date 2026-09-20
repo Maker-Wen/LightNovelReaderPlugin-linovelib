@@ -4,10 +4,13 @@ import io.nightfish.lightnovelreader.api.util.local
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import io.nightfish.lightnovelreader.api.web.search.SearchType
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -78,6 +81,96 @@ class LinovelibRelatedSearchTest {
         assertEquals(listOf("https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html"), requestedUrls)
         assertEquals("\u79d1\u5e7b", page.title)
         assertEquals(listOf("3247", "3768"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertTrue(results.last() is SearchResult.End)
+    }
+
+    @Test
+    fun `linked related page loads and deduplicates the next page`() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            displayTag = "\u79d1\u5e7b",
+            targetUrl = "https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html",
+            htmlLoader = { url ->
+                requestedUrls += url
+                val ids = if ("_2_0.html" in url) listOf("3768", "4000") else listOf("3247", "3768")
+                """
+                    <div id="pagelink">${"\u7b2c"}1/2${"\u9875"}</div>
+                    <ol class="book-ol">
+                      ${ids.joinToString("\n") { id ->
+                          "<li class=\"book-li\"><a class=\"book-layout\" href=\"/novel/$id.html\"><span class=\"book-title\">$id</span></a></li>"
+                      }}
+                    </ol>
+                """.trimIndent()
+            },
+            parser = LinovelibHtmlParser()
+        )
+
+        val results = async { page.getResultFlow().toList() }
+        while (requestedUrls.isEmpty()) yield()
+        page.loadMore()
+        val collected = withTimeout(1_000) { results.await() }
+
+        assertEquals(
+            listOf(
+                "https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html",
+                "https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_2_0.html"
+            ),
+            requestedUrls
+        )
+        assertEquals(
+            listOf("3247", "3768", "4000"),
+            collected.filterIsInstance<SearchResult.SingleBook>().map { it.bookId }
+        )
+    }
+
+    @Test
+    fun `one load request skips a duplicate-only middle page`() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            displayTag = "\u79d1\u5e7b",
+            targetUrl = "https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html",
+            htmlLoader = { url ->
+                requestedUrls += url
+                val id = if ("_3_0.html" in url) "4000" else "3247"
+                """
+                    <div id="pagelink">${"\u7b2c"}1/3${"\u9875"}</div>
+                    <ol class="book-ol">
+                      <li class="book-li"><a class="book-layout" href="/novel/$id.html"><span class="book-title">$id</span></a></li>
+                    </ol>
+                """.trimIndent()
+            },
+            parser = LinovelibHtmlParser()
+        )
+
+        val results = async { page.getResultFlow().toList() }
+        while (requestedUrls.isEmpty()) yield()
+        page.loadMore()
+        val collected = withTimeout(1_000) { results.await() }
+
+        assertEquals(3, requestedUrls.size)
+        assertEquals(
+            listOf("3247", "4000"),
+            collected.filterIsInstance<SearchResult.SingleBook>().map { it.bookId }
+        )
+    }
+
+    @Test
+    fun `empty first page does not scan later pages without results`() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            displayTag = "\u79d1\u5e7b",
+            targetUrl = "https://tw.linovelib.com/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html",
+            htmlLoader = { url ->
+                requestedUrls += url
+                "<div id=\"pagelink\">${"\u7b2c"}1/20${"\u9875"}</div>"
+            },
+            parser = LinovelibHtmlParser()
+        )
+
+        val results = withTimeout(1_000) { page.getResultFlow().toList() }
+
+        assertEquals(1, requestedUrls.size)
+        assertEquals(1, results.count { it is SearchResult.Empty })
         assertTrue(results.last() is SearchResult.End)
     }
 

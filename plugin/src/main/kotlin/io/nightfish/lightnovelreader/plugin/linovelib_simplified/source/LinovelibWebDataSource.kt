@@ -16,6 +16,7 @@ import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
+import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
 import io.nightfish.lightnovelreader.api.error.WebRequestError
 import io.nightfish.lightnovelreader.api.identifier.Identifier
 import io.nightfish.lightnovelreader.api.util.Cache
@@ -32,6 +33,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.jsoup.Jsoup
 import org.jsoup.Connection
 import java.io.File
@@ -100,7 +104,7 @@ class LinovelibWebDataSource(
     }
 
     override suspend fun isOffLine(): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
+        val offline = runCatching {
             executeRequest(
                 url = LinovelibUrls.HOST,
                 userAgent = USER_AGENT,
@@ -108,6 +112,8 @@ class LinovelibWebDataSource(
                 acceptLanguage = "zh-TW,zh;q=0.9,en;q=0.7"
             ).statusCode() !in 200..399
         }.getOrElse { true }
+        offlineStateFlow.value = offline
+        offline
     }
 
     override suspend fun getBookInformation(
@@ -164,6 +170,13 @@ class LinovelibWebDataSource(
             }
         )
     }
+
+    override suspend fun getCoverUriInVolume(
+        bookId: String,
+        volume: Volume,
+        volumeChapterContentMap: MutableMap<String, ChapterContent>,
+        context: Context
+    ): Uri? = findVolumeCoverUri(volume, volumeChapterContentMap)?.let(Uri::parse)
 
     override fun progressBookTagClick(tag: String, navController: NavController) {
         val pageId = linovelibExplorePageProvider.registerRelatedPage(tag)
@@ -302,7 +315,10 @@ class LinovelibWebDataSource(
                         "loadFailure" to inspection.hasLoadFailure
                     )
                 )
-                if (successful) return response
+                if (successful) {
+                    offlineStateFlow.value = false
+                    return response
+                }
 
                 val retryDelay = LinovelibRequestPolicy.retryDelayMillis(
                     statusCode = response.statusCode(),
@@ -325,6 +341,7 @@ class LinovelibWebDataSource(
             throw lastNetworkError ?: IOException("Request attempts exhausted for $url")
         } catch (throwable: Throwable) {
             throwable.rethrowIfCancellation()
+            if (throwable is IOException) offlineStateFlow.value = true
             diagnostics.error(
                 "HTTP_ERROR",
                 throwable,
@@ -601,3 +618,27 @@ class LinovelibWebDataSource(
         const val MAX_CHAPTER_PAGES = 100
     }
 }
+
+internal fun findVolumeCoverUri(
+    volume: Volume,
+    volumeChapterContentMap: Map<String, ChapterContent>
+): String? = volume.chapters
+    .asSequence()
+    .filter { chapter -> chapter.title.trim().lowercase() in ILLUSTRATION_TITLES }
+    .mapNotNull { chapter -> volumeChapterContentMap[chapter.id] }
+    .flatMap { chapter -> chapter.content["components"]?.jsonArray.orEmpty().asSequence() }
+    .mapNotNull { component ->
+        component.jsonObject
+            .takeIf { it["id"]?.jsonPrimitive?.content == ImageComponentData.id.toString() }
+            ?.get("data")
+            ?.jsonObject
+            ?.get("uri")
+            ?.jsonPrimitive
+            ?.content
+    }
+    .firstOrNull()
+
+private val ILLUSTRATION_TITLES = setOf(
+    "插图", "插圖", "插画", "插畫", "彩页", "彩頁", "彩图", "彩圖",
+    "illustration", "illustrations"
+)
