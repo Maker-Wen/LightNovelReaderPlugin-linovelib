@@ -12,7 +12,7 @@ import io.nightfish.lightnovelreader.api.plugin.Plugin
     author = "LightNovelReader contributor",
     description = "Linovelib 简体数据源",
     updateUrl = "",
-    apiVersion = 2
+    apiVersion = 4
 )
 class LinovelibPlugin : LightNovelReaderPlugin {
     override fun onLoad() {

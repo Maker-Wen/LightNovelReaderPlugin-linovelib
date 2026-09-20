@@ -28,8 +28,8 @@ android {
         applicationId = "io.nightfish.lightnovelreader.plugin.linovelib_simplified"
         minSdk = 24
         targetSdk = 36
-        versionCode = 25
-        versionName = "1.1.2"
+        versionCode = 26
+        versionName = "2.0.0"
     }
 
     buildFeatures {
@@ -128,7 +128,7 @@ fun registerHostAbiCheck(variant: String) = tasks.register(
         ).matching { include("**/LinovelibWebDataSource.class") }.singleFile
         val webDataSourceBytecode = String(webDataSourceClass.readBytes(), Charsets.ISO_8859_1)
         check("io/nightfish/lightnovelreader/api/Route" !in webDataSourceBytecode) {
-            "LinovelibWebDataSource directly links Route, which is unavailable in LightNovelReader 1.2.0"
+            "LinovelibWebDataSource directly links Route; route navigation must stay reflective for API 4 hosts"
         }
 
         val apk = fileTree(layout.buildDirectory.dir("outputs/apk/$variant")) {
@@ -182,11 +182,13 @@ dependencies {
     implementation(libs.cxhttp)
     implementation(libs.kotlin.result)
 
-    compileOnly(project(":api"))
+    // Compile against the published API 4 artifact used by current hosts.
+    // Keeping the API on the host side avoids packaging a second copy in the plugin.
+    compileOnly(libs.lightnovelreader.api)
     compileOnly(libs.androidx.navigation.runtime.ktx)
     ksp(libs.lightnovelreader.compiler)
 
     testImplementation(libs.junit)
     testImplementation(libs.jsoup)
-    testImplementation(project(":api"))
+    testImplementation(libs.lightnovelreader.api)
 }

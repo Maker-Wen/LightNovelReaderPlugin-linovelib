@@ -22,5 +22,4 @@ dependencyResolutionManagement {
 }
 
 rootProject.name = "LightNovelReaderPlugin-linovelib"
-include(":api")
 include(":plugin")

@@ -1,6 +1,6 @@
 # LightNovelReaderPlugin-linovelib-simplified
 
-一个面向 [LightNovelReader](https://github.com/dmzz-yyhyy/LightNovelReader) 的 **Linovelib 简体输出**数据源插件。
+一个面向 [LightNovelReader](https://github.com/dmzz-yyhyy/LightNovelReader) 的 **Linovelib 简体输出** 数据源插件。
 
 本项目 fork 自 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，在原插件基础上只调整了繁简转换方向和数据源标识，使 Linovelib 内容输出为简体中文。
 
@@ -8,20 +8,14 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![LightNovelReader](https://img.shields.io/badge/LightNovelReader-plugin-blue)](https://github.com/dmzz-yyhyy/LightNovelReader)
-[![Plugin API](https://img.shields.io/badge/Plugin%20API-2-orange)]()
+[![Plugin API](https://img.shields.io/badge/Plugin%20API-4-orange)]()
 [![Android](https://img.shields.io/badge/Android-10%2B-3DDC84?logo=android&logoColor=white)]()
 [![Release](https://img.shields.io/github/v/release/Maker-Wen/LightNovelReaderPlugin-linovelib?include_prereleases&label=release)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 [![Downloads](https://img.shields.io/github/downloads/Maker-Wen/LightNovelReaderPlugin-linovelib/total?label=downloads)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 
 ## 下载
 
-最新版本：[v1.1.2-simplified](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/tag/v1.1.2-simplified)
-
-直接下载：[Linovelib-Simplified-Standalone-1.1.2.apk.lnrp](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/download/v1.1.2-simplified/Linovelib-Simplified-Standalone-1.1.2.apk.lnrp)
-
-SHA-256 见 Release notes。
-
-也可以按下方[构建](#构建)步骤自行生成。
+API 4 适配版为 `2.0.0`，发布产物需要按下方[构建](#构建)步骤生成。
 
 ## 功能
 
@@ -41,15 +35,19 @@ SHA-256 见 Release notes。
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib_simplified` |
 | 数据源 id | `linovelib_tw` | `linovelib_simplified` |
 | 文字转换 | `toTraditional` | `toSimplified` |
-| 版本名 | 1.1.2 | 1.1.2 |
+| 版本名 | 1.1.2 | 2.0.0 |
 
 因为 applicationId 和数据源 id 都不同，本项目可以和上游的 **Linovelib TW** 插件同时安装、同时使用。
 
 ## 兼容性
 
-- LightNovelReader 1.2.x
-- Plugin API 2
+- LightNovelReader 1.3.x
+- Plugin API 4
 - Android 10（API 29）及以上
+
+API 4 版本保留 API 2 的 `linovelib_simplified.hashCode()` 标识载荷，用于迁移旧版本的数据源选择记录。
+
+从旧版升级时请使用相同签名的插件包，并在安装后确认插件已启用、数据源仍选择“Linovelib 简体”。升级前建议先导出应用数据；如果升级后书架为空，请先重启应用，再切换到该数据源，或使用应用的数据导入功能恢复备份。旧 API 2 的整数分区文件需要宿主侧配套兼容读取。
 
 繁简转换使用 Android ICU 的 `Traditional-Simplified`。Android 10 以下系统可能无法转换，文字会保持原文。
 
@@ -89,7 +87,7 @@ Release 签名通过上面的四个环境变量注入。未提供签名变量时
 
 ## 说明
 
-- 本插件只修改繁简转换方向和插件标识，不修改原插件的图片、缓存、搜索和章节处理逻辑。
+- 本插件保留原插件的图片、搜索和章节处理逻辑，并适配 API 4 的返回类型与数据源标识；繁简转换方向保持为简体输出。
 - 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
 - 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。
 - Release 产物使用独立的 release keystore 签名。

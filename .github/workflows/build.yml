@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing tag to build and publish'
         required: true
-        default: 'v1.1.2-simplified'
+        default: 'v2.0.0-simplified'
       publish:
         description: 'Publish/update the GitHub release'
         type: boolean
@@ -104,7 +104,7 @@ jobs:
 
           - 插件名：`Linovelib 简体`
           - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib_simplified`
-          - 数据源 id：`linovelib_simplified`
+          - 逻辑数据源 id：`linovelib_simplified`（API 4 保留旧 hash 标识用于迁移）
           - 文字转换：`toTraditional` -> `toSimplified`
           - 可以和原版 `Linovelib TW` 同时安装
           - release 签名构建
