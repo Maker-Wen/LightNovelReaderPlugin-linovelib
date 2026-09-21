@@ -1,5 +1,8 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
+import android.net.Uri
+import io.nightfish.lightnovelreader.api.book.MutableBookInformation
+import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.util.local
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
@@ -33,13 +36,13 @@ internal class LinovelibSearchProvider(
         )
         if (bookId != null) {
             runCatching {
-                parser.parseBookInformation(bookId, htmlLoader(LinovelibUrls.book(host, bookId)))
+                parser.parseBookInformation(bookId, htmlLoader(LinovelibUrls.book(host, bookId))).toBookInformation()
             }.onFailure {
                 it.rethrowIfCancellation()
                 diagnostics.error("SEARCH_DIRECT_ERROR", it, mapOf("bookId" to bookId))
             }.getOrNull()
-                ?.takeUnless { it.title.isBlank() }
-                ?.let { emit(SearchResult.MultipleBook(it.id)) }
+                ?.takeUnless { it.isEmpty() }
+                ?.let { emit(SearchResult.MultipleBook(it)) }
                 ?: emit(SearchResult.SingleBook(bookId))
             diagnostics.info("SEARCH_DONE", mapOf("mode" to "direct", "results" to 1, "bookId" to bookId))
             emit(SearchResult.End())
@@ -68,13 +71,13 @@ internal class LinovelibSearchProvider(
         val redirectedBookId = searchResponse.directBookId(parser)
         if (redirectedBookId != null) {
             val book = runCatching {
-                parser.parseBookInformation(redirectedBookId, searchResponse.html)
+                parser.parseBookInformation(redirectedBookId, searchResponse.html).toBookInformation()
             }.onFailure {
                 it.rethrowIfCancellation()
                 diagnostics.error("SEARCH_REDIRECT_ERROR", it, mapOf("bookId" to redirectedBookId))
             }.getOrNull()
-            if (book != null && book.title.isNotBlank()) {
-                emit(SearchResult.MultipleBook(book.id))
+            if (book != null && !book.isEmpty()) {
+                emit(SearchResult.MultipleBook(book))
             } else {
                 emit(SearchResult.SingleBook(redirectedBookId))
             }
@@ -98,7 +101,7 @@ internal class LinovelibSearchProvider(
             )
         )
         val detailedBooks = searchDetails.load(books)
-        detailedBooks.forEach { emit(SearchResult.MultipleBook(it.id)) }
+        detailedBooks.forEach { emit(SearchResult.MultipleBook(it.toBookInformation())) }
         if (detailedBooks.isEmpty()) emit(SearchResult.Empty())
         diagnostics.info(
             "SEARCH_DONE",
@@ -106,6 +109,21 @@ internal class LinovelibSearchProvider(
         )
         emit(SearchResult.End())
     }
+
+    private fun ParsedBookInformation.toBookInformation() =
+        MutableBookInformation(
+            id = id,
+            title = title,
+            subtitle = subtitle,
+            coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
+            author = author,
+            description = description,
+            tags = LinovelibRelatedSearch.displayTags(author, tags, publishingHouse),
+            publishingHouse = "",
+            wordCount = WordCount(wordCount),
+            lastUpdated = lastUpdated.atStartOfDay(),
+            isComplete = isComplete
+        )
 
     private companion object {
         const val MAX_SEARCH_RESULTS = 20

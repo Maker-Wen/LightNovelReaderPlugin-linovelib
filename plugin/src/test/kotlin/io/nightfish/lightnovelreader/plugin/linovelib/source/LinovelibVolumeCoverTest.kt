@@ -1,7 +1,7 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
+import io.nightfish.lightnovelreader.api.book.MutableChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
 import kotlinx.serialization.json.addJsonObject
@@ -21,7 +21,7 @@ class LinovelibVolumeCoverTest {
             volumeTitle = "Volume 1",
             chapters = listOf(ChapterInformation("illustrations", "Illustrations"))
         )
-        val chapter = ChapterContent(
+        val chapter = MutableChapterContent(
             id = "illustrations",
             title = "Illustrations",
             content = contentWithImage("file:/chapter-images/cover.webp")
@@ -40,7 +40,7 @@ class LinovelibVolumeCoverTest {
             volumeTitle = "Volume 1",
             chapters = listOf(ChapterInformation("chapter-1", "Chapter 1"))
         )
-        val chapter = ChapterContent(
+        val chapter = MutableChapterContent(
             id = "chapter-1",
             title = "Chapter 1",
             content = contentWithImage("file:/chapter-images/inline.webp")
@@ -56,7 +56,7 @@ class LinovelibVolumeCoverTest {
             volumeTitle = "Volume 1",
             chapters = listOf(ChapterInformation("chapter-3", "第3章 插图里的秘密"))
         )
-        val chapter = ChapterContent(
+        val chapter = MutableChapterContent(
             id = "chapter-3",
             title = "第3章 插图里的秘密",
             content = contentWithImage("file:/chapter-images/inline.webp")
@@ -68,7 +68,7 @@ class LinovelibVolumeCoverTest {
     private fun contentWithImage(uri: String) = buildJsonObject {
         putJsonArray("components") {
             addJsonObject {
-                put("id", ImageComponentData.id.toString())
+                put("id", ImageComponentData.ID)
                 putJsonObject("data") {
                     put("uri", uri)
                 }

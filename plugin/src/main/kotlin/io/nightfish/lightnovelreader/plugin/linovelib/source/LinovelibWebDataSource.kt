@@ -4,21 +4,18 @@ import android.content.Context
 import android.net.Uri
 import android.util.Log
 import androidx.navigation.NavController
-import com.github.michaelbull.result.Err
-import com.github.michaelbull.result.Ok
-import com.github.michaelbull.result.Result
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
+import io.nightfish.lightnovelreader.api.book.MutableBookInformation
+import io.nightfish.lightnovelreader.api.book.MutableChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
 import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
-import io.nightfish.lightnovelreader.api.error.WebRequestError
-import io.nightfish.lightnovelreader.api.identifier.Identifier
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
 import io.nightfish.lightnovelreader.api.web.WebDataSource
@@ -41,10 +38,7 @@ import org.jsoup.Connection
 import java.io.File
 import java.io.IOException
 
-internal val LINOVELIB_SOURCE_ID = Identifier(
-    namespace = "lightnovelreader",
-    id = "linovelib"
-)
+internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
 
 @Suppress("unused")
 @WebDataSource(
@@ -67,7 +61,7 @@ class LinovelibWebDataSource(
         maxCountEachType = LinovelibDataSourceConfiguration.cacheEntriesPerType,
         timeout = LinovelibDataSourceConfiguration.cacheTimeoutMillis
     )
-    override val id: Identifier = LINOVELIB_SOURCE_ID
+    override val id: Int = LINOVELIB_SOURCE_ID
     override val offLine: Boolean get() = offlineStateFlow.value
     override val isOffLineFlow: StateFlow<Boolean> = offlineStateFlow
     private val linovelibSearchProvider = LinovelibSearchProvider(
@@ -117,59 +111,46 @@ class LinovelibWebDataSource(
         offline
     }
 
-    override suspend fun getBookInformation(
-        id: String
-    ): Result<BookInformation, WebRequestError> = withContext(Dispatchers.IO) {
+    override suspend fun getBookInformation(id: String): BookInformation = withContext(Dispatchers.IO) {
         runCatching {
             parser.parseBookInformation(id, getHtml(LinovelibUrls.book(site.host, id))).toBookInformation()
+                .takeUnless(BookInformation::isEmpty)
                 ?: fallbackBookInformation(id)
-                ?: error("Book information is empty")
-        }.fold(
-            onSuccess = { Ok(it) },
-            onFailure = { error ->
-                error.rethrowIfCancellation()
-                Log.e(TAG, "Failed to get book information: $id", error)
-                diagnostics.error("BOOK_ERROR", error, mapOf("bookId" to id))
-                Err(WebRequestError("Book request failed", "无法获取书本信息(id=$id)", error))
-            }
-        )
+        }.getOrElse { error ->
+            error.rethrowIfCancellation()
+            Log.e(TAG, "Failed to get book information: $id", error)
+            diagnostics.error("BOOK_ERROR", error, mapOf("bookId" to id))
+            fallbackBookInformation(id)
+        }
     }
 
-    override suspend fun getBookVolumes(
-        id: String
-    ): Result<BookVolumes, WebRequestError> = withContext(Dispatchers.IO) {
+    override suspend fun getBookVolumes(id: String): BookVolumes = withContext(Dispatchers.IO) {
         runCatching {
             parser.parseCatalog(id, getHtml(LinovelibUrls.catalog(site.host, id))).toBookVolumes()
-        }.fold(
-            onSuccess = { Ok(it) },
-            onFailure = { error ->
-                error.rethrowIfCancellation()
-                Log.e(TAG, "Failed to get book volumes: $id", error)
-                diagnostics.error("CATALOG_ERROR", error, mapOf("bookId" to id))
-                Err(WebRequestError("Catalog request failed", "无法获取书本目录(id=$id)", error))
-            }
-        )
+        }.getOrElse { error ->
+            error.rethrowIfCancellation()
+            Log.e(TAG, "Failed to get book volumes: $id", error)
+            diagnostics.error("CATALOG_ERROR", error, mapOf("bookId" to id))
+            BookVolumes.empty(id)
+        }
     }
 
     override suspend fun getChapterContent(
         chapterId: String,
         bookId: String
-    ): Result<ChapterContent, WebRequestError> = withContext(Dispatchers.IO) {
+    ): ChapterContent = withContext(Dispatchers.IO) {
         runCatching {
             getChapterContentPages(chapterId, bookId).toChapterContent()
-        }.fold(
-            onSuccess = { Ok(it) },
-            onFailure = { error ->
-                error.rethrowIfCancellation()
-                Log.e(TAG, "Failed to get chapter content: bookId=$bookId, chapterId=$chapterId", error)
-                diagnostics.error(
-                    "CHAPTER_ERROR",
-                    error,
-                    mapOf("bookId" to bookId, "chapterId" to chapterId)
-                )
-                Err(WebRequestError("Chapter request failed", "无法获取章节内容(id=$chapterId)", error))
-            }
-        )
+        }.getOrElse { error ->
+            error.rethrowIfCancellation()
+            Log.e(TAG, "Failed to get chapter content: bookId=$bookId, chapterId=$chapterId", error)
+            diagnostics.error(
+                "CHAPTER_ERROR",
+                error,
+                mapOf("bookId" to bookId, "chapterId" to chapterId)
+            )
+            ChapterContent.empty(chapterId)
+        }
     }
 
     override suspend fun getCoverUriInVolume(
@@ -536,13 +517,13 @@ class LinovelibWebDataSource(
     private fun elapsedMilliseconds(startedAt: Long): Long =
         (System.nanoTime() - startedAt) / 1_000_000
 
-    private fun ParsedBookInformation.toBookInformation(): BookInformation? {
-        if (title.isEmpty()) return null
-        return BookInformation(
+    private fun ParsedBookInformation.toBookInformation(): BookInformation {
+        if (title.isEmpty()) return BookInformation.empty(id)
+        return MutableBookInformation(
             id = id,
             title = title,
             subtitle = subtitle,
-            coverUri = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
+            coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
             author = author,
             description = description,
             tags = LinovelibRelatedSearch.displayTags(author, tags, publishingHouse),
@@ -553,17 +534,17 @@ class LinovelibWebDataSource(
         )
     }
 
-    private fun fallbackBookInformation(id: String): BookInformation? =
+    private fun fallbackBookInformation(id: String): BookInformation =
         parser.cachedBookInformation(id)?.toBookInformation()
             ?: parser.cachedExploreBook(id)?.toBookInformation()
+            ?: BookInformation.empty(id)
 
-    private fun ParsedExploreBook.toBookInformation(): BookInformation? {
-        if (title.isBlank()) return null
-        return BookInformation(
+    private fun ParsedExploreBook.toBookInformation(): BookInformation =
+        MutableBookInformation(
             id = id,
             title = title,
             subtitle = "",
-            coverUri = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
+            coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
             author = author,
             description = "",
             tags = emptyList(),
@@ -572,7 +553,6 @@ class LinovelibWebDataSource(
             lastUpdated = LinovelibDates.unknownDateTime(),
             isComplete = false
         )
-    }
 
     private fun ParsedCatalog.toBookVolumes(): BookVolumes =
         BookVolumes(
@@ -602,11 +582,11 @@ class LinovelibWebDataSource(
             }
         }.build()
 
-        return ChapterContent(
+        return MutableChapterContent(
             id = id,
             title = title,
             content = content,
-            prevChapter = previousChapterId,
+            lastChapter = previousChapterId,
             nextChapter = nextChapterId
         )
     }
@@ -629,7 +609,7 @@ internal fun findVolumeCoverUri(
     .flatMap { chapter -> chapter.content["components"]?.jsonArray.orEmpty().asSequence() }
     .mapNotNull { component ->
         component.jsonObject
-            .takeIf { it["id"]?.jsonPrimitive?.content == ImageComponentData.id.toString() }
+            .takeIf { it["id"]?.jsonPrimitive?.content == ImageComponentData.ID }
             ?.get("data")
             ?.jsonObject
             ?.get("uri")

@@ -128,7 +128,7 @@ fun registerHostAbiCheck(variant: String) = tasks.register(
         ).matching { include("**/LinovelibWebDataSource.class") }.singleFile
         val webDataSourceBytecode = String(webDataSourceClass.readBytes(), Charsets.ISO_8859_1)
         check("io/nightfish/lightnovelreader/api/Route" !in webDataSourceBytecode) {
-            "LinovelibWebDataSource directly links Route; route navigation must stay reflective for API 4 hosts"
+            "LinovelibWebDataSource directly links Route; route navigation must stay reflective for LightNovelReader 1.2.x"
         }
 
         val apk = fileTree(layout.buildDirectory.dir("outputs/apk/$variant")) {
@@ -180,9 +180,8 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jsoup)
     implementation(libs.cxhttp)
-    implementation(libs.kotlin.result)
 
-    // Compile against the published API 4 artifact used by current hosts.
+    // Compile against the API 2 contract supported by LightNovelReader 1.2.2.
     // Keeping the API on the host side avoids packaging a second copy in the plugin.
     compileOnly(libs.lightnovelreader.api)
     compileOnly(libs.androidx.navigation.runtime.ktx)
@@ -190,5 +189,6 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.jsoup)
-    testImplementation(libs.lightnovelreader.api)
+    // Tests run against the API exposed by the actual LightNovelReader 1.2.2 host.
+    testImplementation(libs.lightnovelreader.host.api)
 }
