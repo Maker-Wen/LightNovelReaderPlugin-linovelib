@@ -2,7 +2,6 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSource
 import io.nightfish.lightnovelreader.api.web.explore.filter.Filter
-import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
@@ -13,8 +12,7 @@ internal object LinovelibRelatedSearch {
 
     fun authorDisplayTag(author: String): String = "$AUTHOR_PREFIX$author"
 
-    fun displayTags(author: String, tags: List<String>, publishingHouse: String = ""): List<String> = buildList {
-        if (publishingHouse.isNotBlank()) add(publishingHouse)
+    fun displayTags(author: String, tags: List<String>): List<String> = buildList {
         if (author.isNotBlank()) add(authorDisplayTag(author))
         addAll(tags.filter(String::isNotBlank))
     }.distinct()
@@ -26,10 +24,11 @@ internal class LinovelibLinkedExpandedPageDataSource(
     private val displayTag: String,
     private val targetUrl: String,
     private val htmlLoader: suspend (String) -> String,
-    private val parser: LinovelibHtmlParser
+    private val parser: LinovelibHtmlParser,
+    override val filters: List<Filter<*>> = emptyList(),
+    private val filteredUrl: (() -> String)? = null
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
-    override val filters: List<Filter<*>> = emptyList()
     @Volatile
     private var loadMoreRequests: Channel<Unit>? = null
 
@@ -40,23 +39,31 @@ internal class LinovelibLinkedExpandedPageDataSource(
     override fun getResultFlow(): Flow<SearchResult> = flow {
         val requests = Channel<Unit>(Channel.CONFLATED)
         loadMoreRequests = requests
+        // The host cancels and recollects on filter changes. Keep each collection's pages consistent.
+        val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
         val emittedBookIds = mutableSetOf<String>()
         var currentPage = 1
         var lastPage = 1
         try {
             do {
                 val html = runCatching {
-                    htmlLoader(pageUrl(currentPage) ?: error("Unsupported Linovelib pagination URL: $targetUrl"))
+                    htmlLoader(LinovelibUrls.listPage(firstPageUrl, currentPage)
+                        ?: error("Unsupported Linovelib pagination URL: $firstPageUrl"))
                 }.onFailure(Throwable::rethrowIfCancellation).getOrElse {
-                    emit(SearchResult.Error("Failed to request Linovelib related books"))
+                    emit(SearchResult.Error("书单加载失败，请稍后重试"))
                     emit(SearchResult.End())
                     return@flow
                 }
                 if (currentPage == 1) {
-                    lastPage = if (pageUrl(2) == null) 1 else parser.parseLastPage(html)
+                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else parser.parseLastPage(html)
                 }
-                val books = parser.parseListRow(displayTag, html).books
-                    .filter { emittedBookIds.add(it.id) }
+                val parsedBooks = parser.parseListRow(displayTag, html).books
+                if (parsedBooks.isEmpty() && !LinovelibSearchResponse(firstPageUrl, html).hasEmptyResultList()) {
+                    emit(SearchResult.Error("未能识别书单页面，请稍后重试"))
+                    emit(SearchResult.End())
+                    return@flow
+                }
+                val books = parsedBooks.filter { emittedBookIds.add(it.id) }
                 books.forEach { emit(SearchResult.SingleBook(it.id)) }
                 if (currentPage == 1 && books.isEmpty()) break
                 if (currentPage >= lastPage) break
@@ -71,26 +78,10 @@ internal class LinovelibLinkedExpandedPageDataSource(
         }
     }
 
-    private fun pageUrl(page: Int): String? {
-        if (page == 1) return targetUrl
-        PAGE_SEGMENT_REGEX.find(targetUrl)?.let {
-            return PAGE_SEGMENT_REGEX.replace(targetUrl) { match ->
-                "_${page}_0${match.groupValues[1]}"
-            }
-        }
-        if ("/wenku/" !in targetUrl) return null
-        return WENKU_PATH_PAGE_REGEX.takeIf { it.containsMatchIn(targetUrl) }
-            ?.replace(targetUrl) { match -> "/$page${match.groupValues[1]}" }
-    }
-
-    private companion object {
-        val PAGE_SEGMENT_REGEX = Regex("_\\d+_0(\\.html(?:\\?.*)?)$")
-        val WENKU_PATH_PAGE_REGEX = Regex("/\\d+(\\.html(?:\\?.*)?)$")
-    }
 }
 
 internal class LinovelibRelatedExpandedPageDataSource(
-    private val searchProvider: SearchProvider,
+    private val searchBookIds: (String) -> Flow<SearchResult>,
     private val displayTag: String
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
@@ -98,10 +89,7 @@ internal class LinovelibRelatedExpandedPageDataSource(
 
     override fun loadMore() = Unit
 
-    override fun getResultFlow(): Flow<SearchResult> {
-        val searchType = searchProvider.searchTypes.first()
-        return searchProvider.search(searchType, LinovelibRelatedSearch.keyword(displayTag))
-    }
+    override fun getResultFlow(): Flow<SearchResult> = searchBookIds(LinovelibRelatedSearch.keyword(displayTag))
 }
 
 internal object LinovelibRelatedNavigation {

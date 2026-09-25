@@ -6,9 +6,9 @@ import org.junit.Test
 
 class LinovelibPluginCompatibilityTest {
     @Test
-    fun `plugin targets API 2`() {
+    fun `plugin targets API 3`() {
         val metadata = requireNotNull(LinovelibPlugin::class.java.getAnnotation(Plugin::class.java))
 
-        assertEquals(2, metadata.apiVersion)
+        assertEquals(3, metadata.apiVersion)
     }
 }

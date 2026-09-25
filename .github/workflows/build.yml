@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing tag to build and publish'
         required: true
-        default: 'v2.0.0'
+        default: 'v2.1.0'
       publish:
         description: 'Publish/update the GitHub release'
         type: boolean
@@ -100,13 +100,13 @@ jobs:
           cat > release-notes.md <<'EOF'
           ## Linovelib
 
-          基于 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，支持切换简体站与繁体站。
+          基于 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，统一使用简体站入口，繁体显示使用本体的简繁转换设置。
 
           - 插件名：`Linovelib`
           - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib`
           - 数据源 id：`linovelib.hashCode()`（`-1488977864`）
-          - 兼容 LightNovelReader 1.2.2 / Plugin API 2
-          - 支持简体站 / 繁体站切换
+          - 兼容 LightNovelReader 1.2.2 / Plugin API 3
+          - 统一使用 `https://www.bilinovel.net`；繁体显示由本体简繁转换提供
           - release 签名构建
           EOF
           printf '\nSHA-256: `%s`\n' "$SHA" >> release-notes.md

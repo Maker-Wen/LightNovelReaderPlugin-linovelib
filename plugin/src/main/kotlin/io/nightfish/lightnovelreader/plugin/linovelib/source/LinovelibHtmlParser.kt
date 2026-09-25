@@ -3,6 +3,7 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Element
 import org.jsoup.nodes.TextNode
+import java.net.URI
 import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 
@@ -46,7 +47,8 @@ data class ParsedChapterContent(
 
 data class ParsedExploreRow(
     val title: String,
-    val books: List<ParsedExploreBook>
+    val books: List<ParsedExploreBook>,
+    val expandedUrl: String? = null
 )
 
 data class ParsedExploreBook(
@@ -62,8 +64,7 @@ sealed class ParsedContentBlock {
 }
 
 class LinovelibHtmlParser(
-    private val host: String = LinovelibUrls.HOST,
-    private val textConverter: (String) -> String = { it }
+    private val host: String = LinovelibUrls.HOST
 ) {
     private val parsedBookCache = ConcurrentHashMap<String, ParsedBookInformation>()
     private val exploreBookCache = ConcurrentHashMap<String, ParsedExploreBook>()
@@ -113,7 +114,7 @@ class LinovelibHtmlParser(
             title = document.selectFirst(".book-detail-info .book-title, .book-title")?.text().orEmpty()
                 .ifBlank { meta("og:novel:book_name") },
             subtitle = document.selectFirst(".backupname span")?.text().orEmpty(),
-            coverUrl = normalizeUrl(meta("og:image")),
+            coverUrl = LinovelibUrls.currentCoverUrl(normalizeUrl(meta("og:image"))),
             author = author,
             description = document.selectFirst("#bookSummary content")
                 ?.let(::htmlWithBreaksToText)
@@ -126,8 +127,8 @@ class LinovelibHtmlParser(
                 document.selectFirst(".book-status")?.text().orEmpty()
                     .ifBlank { meta("og:novel:update_time") }
             ),
-            isComplete = metaText.contains(STATUS_COMPLETE) || meta("og:novel:status") == STATUS_COMPLETE
-        ).also { parsedBookCache[id] = it }
+            isComplete = STATUS_COMPLETE.containsMatchIn(metaText) || STATUS_COMPLETE.matches(meta("og:novel:status"))
+        ).also { if (it.title.isNotBlank()) parsedBookCache[id] = it }
     }
 
     fun parseCatalog(bookId: String, html: String): ParsedCatalog {
@@ -170,7 +171,7 @@ class LinovelibHtmlParser(
 
         return ParsedChapterContent(
             id = chapterId,
-            title = textConverter(document.selectFirst("#atitle")?.text().orEmpty()),
+            title = document.selectFirst("#atitle")?.text().orEmpty(),
             previousChapterId = readParamChapterId(readParams, "url_previous"),
             nextChapterId = readParamChapterId(readParams, "url_next"),
             nextPageUrl = readParamUrl(readParams, "url_next"),
@@ -204,7 +205,11 @@ class LinovelibHtmlParser(
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
                     .take(MAX_BOOKS_PER_ROW)
-                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(title, books)
+                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
+                    title,
+                    books,
+                    expandedListUrl(module, ".module-header a.module-header-btn[href]")
+                )
             }
             .filter { it.books.isNotEmpty() }
             .take(MAX_EXPLORE_ROWS)
@@ -232,7 +237,11 @@ class LinovelibHtmlParser(
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
                     .take(MAX_BOOKS_PER_ROW)
-                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(title, books)
+                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
+                    title,
+                    books,
+                    expandedListUrl(category, "a.fl-header[href], a.fl-content-li-more[href]")
+                )
             }
             .take(MAX_EXPLORE_ROWS)
             .also(::rememberExploreRows)
@@ -243,9 +252,18 @@ class LinovelibHtmlParser(
         val books = document.select("ol.book-ol .book-li a.book-layout[href], a.book-layout[href]")
             .mapNotNull(::parseExploreBook)
             .distinctBy { it.id }
-            .take(MAX_LIST_BOOKS)
         return ParsedExploreRow(title, books).also { rememberExploreRows(listOf(it)) }
     }
+
+    private fun expandedListUrl(element: Element, selector: String): String? = element.select(selector)
+        .asSequence()
+        .mapNotNull { link -> runCatching { URI(link.absUrl("href")) }.getOrNull() }
+        .firstOrNull { url ->
+            url.host == URI(host).host && url.scheme == "https" &&
+                (url.path.startsWith("/wenku/") ||
+                    url.path.matches(Regex("/top(?:full)?/[^/]+/\\d+\\.html")))
+        }
+        ?.toString()
 
     fun parseLastPage(html: String): Int {
         val document = Jsoup.parse(html, host)
@@ -259,19 +277,6 @@ class LinovelibHtmlParser(
             ?.getOrNull(1)
             ?.toIntOrNull()
             ?: 1
-    }
-
-    fun searchExploreBooks(keyword: String, rows: List<ParsedExploreRow>): List<ParsedExploreBook> {
-        val query = keyword.searchFold()
-        if (query.isEmpty()) return emptyList()
-        return rows
-            .flatMap { it.books }
-            .distinctBy { it.id }
-            .filter {
-                it.title.searchFold().contains(query) ||
-                    it.author.searchFold().contains(query)
-            }
-            .take(MAX_SEARCH_RESULTS)
     }
 
     fun bookIdFromKeyword(keyword: String): String? {
@@ -303,14 +308,14 @@ class LinovelibHtmlParser(
             ?.trim()
             ?.ifBlank { null }
         val imageTitle = image?.attr("alt")?.trim()?.ifBlank { null }
-        val title = textConverter(imageTitle
+        val title = imageTitle
             ?.takeIf { visibleTitle.isNullOrBlank() || visibleTitle.endsWith("...") || visibleTitle.endsWith("\u2026") }
             ?: visibleTitle
             ?: imageTitle
-            ?: cleanExploreTitle(element.text()))
+            ?: cleanExploreTitle(element.text())
         if (title.isBlank()) return null
 
-        val author = textConverter(element.selectFirst(".module-slide-author .gray, .book-author, .module-slide-author")
+        val author = element.selectFirst(".module-slide-author .gray, .book-author, .module-slide-author")
             ?.text()
             ?.let(::cleanAuthor)
             .orEmpty()
@@ -320,7 +325,7 @@ class LinovelibHtmlParser(
                     ?.groupValues
                     ?.getOrNull(1)
                     .orEmpty()
-            })
+            }
         val coverUrl = image
             ?.attr("data-src")
             ?.ifBlank { image.attr("data-original") }
@@ -329,11 +334,8 @@ class LinovelibHtmlParser(
             .orEmpty()
             .ifBlank { LinovelibUrls.cover(host, id) }
 
-        return ParsedExploreBook(id, title, author, coverUrl).also { exploreBookCache[id] = it }
+        return ParsedExploreBook(id, title, author, LinovelibUrls.currentCoverUrl(coverUrl)).also { exploreBookCache[id] = it }
     }
-
-    private fun parseContentBlock(element: Element): ParsedContentBlock? =
-        parseContentBlocks(element).firstOrNull()
 
     private fun parseContentBlocks(element: Element): List<ParsedContentBlock> {
         if (element.hasClass("cgo") || element.normalName() in SKIPPED_CONTENT_TAGS) return emptyList()
@@ -345,14 +347,14 @@ class LinovelibHtmlParser(
         if (element.selectFirst("img") == null) {
             val text = cleanContentText(element.textWithNewLines())
             if (text.isEmpty()) return emptyList()
-            return listOf(ParsedContentBlock.Text(textConverter(text)))
+            return listOf(ParsedContentBlock.Text(text))
         }
         val blocks = mutableListOf<ParsedContentBlock>()
         val text = StringBuilder()
 
         fun flushText() {
             val cleaned = cleanContentText(text.toString())
-            if (cleaned.isNotEmpty()) blocks += ParsedContentBlock.Text(textConverter(cleaned))
+            if (cleaned.isNotEmpty()) blocks += ParsedContentBlock.Text(cleaned)
             text.clear()
         }
 
@@ -446,12 +448,6 @@ class LinovelibHtmlParser(
             .removePrefix("\uff1a")
             .trim()
 
-    private fun String.searchFold(): String =
-        lowercase()
-            .map { SEARCH_FOLD_MAP[it] ?: it }
-            .joinToString("")
-            .replace(Regex("""[\s　·・,，.。:：'’"“”\-—_()（）\[\]【】]+"""), "")
-
     private fun cleanContentText(text: String): String {
         val failureMarkerIndex = listOf(CONTENT_LOAD_FAILED, SIMPLIFIED_CONTENT_LOAD_FAILED)
             .map(text::indexOf)
@@ -498,46 +494,10 @@ class LinovelibHtmlParser(
     private companion object {
         const val MAX_EXPLORE_ROWS = 8
         const val MAX_BOOKS_PER_ROW = 12
-        const val MAX_LIST_BOOKS = 30
-        const val MAX_SEARCH_RESULTS = 20
-        const val STATUS_COMPLETE = "\u5b8c\u7d50"
+        val STATUS_COMPLETE = Regex("完[结結]")
         const val CONTENT_LOAD_FAILED = "\u5167\u5bb9\u52a0\u8f09\u5931\u6557"
         const val SIMPLIFIED_CONTENT_LOAD_FAILED = "\u5185\u5bb9\u52a0\u8f7d\u5931\u8d25"
         const val MOBILE_PAGE_WARNING = "\u624b\u6a5f\u7248\u9801\u9762"
         val SKIPPED_CONTENT_TAGS = setOf("center", "script", "style", "ins")
-        val SEARCH_FOLD_MAP = mapOf(
-            '剑' to '劍',
-            '进' to '進',
-            '击' to '擊',
-            '实' to '實',
-            '势' to '勢',
-            '义' to '義',
-            '欢' to '歡',
-            '错' to '錯',
-            '题' to '題',
-            '儿' to '兒',
-            '异' to '異',
-            '转' to '轉',
-            '变' to '變',
-            '这' to '這',
-            '档' to '檔',
-            '关' to '關',
-            '于' to '於',
-            '为' to '為',
-            '与' to '與',
-            '轻' to '輕',
-            '说' to '說',
-            '学' to '學',
-            '战' to '戰',
-            '斗' to '鬥',
-            '龙' to '龍',
-            '爱' to '愛',
-            '恋' to '戀',
-            '传' to '傳',
-            '网' to '網',
-            '馆' to '館',
-            '迷' to '迷',
-            '砾' to '礫'
-        )
     }
 }

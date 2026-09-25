@@ -15,7 +15,6 @@ val hasReleaseSigning = listOf(
 
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.compose.compiler)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.ksp)
 }
@@ -28,12 +27,11 @@ android {
         applicationId = "io.nightfish.lightnovelreader.plugin.linovelib"
         minSdk = 24
         targetSdk = 36
-        versionCode = 26
-        versionName = "2.0.0"
+        versionCode = 34
+        versionName = "2.1.0"
     }
 
     buildFeatures {
-        compose = true
         buildConfig = true
     }
 
@@ -173,15 +171,11 @@ tasks.configureEach {
 dependencies {
     coreLibraryDesugaring(libs.desugar.jdk.libs)
     implementation(libs.androidx.runtime)
-    implementation(libs.androidx.foundation.layout)
-    implementation(platform(libs.compose.bom))
-    implementation(libs.compose.material3)
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.jsoup)
-    implementation(libs.cxhttp)
 
-    // Compile against the API 2 contract supported by LightNovelReader 1.2.2.
+    // Compile against the API 3 contract exposed by LightNovelReader 1.2.2.
     // Keeping the API on the host side avoids packaging a second copy in the plugin.
     compileOnly(libs.lightnovelreader.api)
     compileOnly(libs.androidx.navigation.runtime.ktx)

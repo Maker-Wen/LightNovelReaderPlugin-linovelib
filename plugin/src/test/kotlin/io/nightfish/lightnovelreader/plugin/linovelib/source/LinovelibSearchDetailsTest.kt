@@ -1,6 +1,7 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,14 +37,15 @@ class LinovelibSearchDetailsTest {
 
         val result = details.load(
             listOf(ParsedExploreBook("101", "Search title", "Search author", ""))
-        )
+        ).toList()
 
         assertEquals(listOf(LinovelibUrls.book("101")), requestedUrls)
-        assertEquals(1, result.size)
-        assertEquals("101", result.single().id)
-        assertEquals(LocalDate.of(2026, 6, 30), result.single().lastUpdated)
-        assertEquals(123_000, result.single().wordCount)
-        assertTrue(result.single().isComplete)
+        assertEquals(2, result.size)
+        assertEquals("Search title", result.first().title)
+        assertEquals("101", result.last().id)
+        assertEquals(LocalDate.of(2026, 6, 30), result.last().lastUpdated)
+        assertEquals(123_000, result.last().wordCount)
+        assertTrue(result.last().isComplete)
     }
 
     @Test
@@ -63,25 +65,44 @@ class LinovelibSearchDetailsTest {
         )
         val books = (1..9).map { id -> ParsedExploreBook(id.toString(), "Book $id", "Author", "") }
 
-        val result = details.load(books)
+        val result = details.load(books).toList()
 
-        assertEquals(9, result.size)
+        assertEquals(18, result.size)
         assertEquals(1, maximumActive.get())
     }
 
     @Test
-    fun `omits detail pages without an update date`() = runBlocking {
+    fun `emits all search rows before requests and retains failed or undated details`() = runBlocking {
+        val requestedUrls = mutableListOf<String>()
         val details = LinovelibSearchDetails(
-            htmlLoader = { bookHtml(id = "404", date = "") },
+            htmlLoader = { url ->
+                requestedUrls += url
+                if (url == LinovelibUrls.book("405")) error("Detail request failed")
+                bookHtml(id = "404", date = "")
+            },
             parser = LinovelibHtmlParser(),
             diagnostics = silentDiagnostics()
         )
+        val result = linkedMapOf<String, ParsedBookInformation>()
+        var emitted = 0
+        details.load(
+            listOf(
+                ParsedExploreBook("404", "No date", "Author", ""),
+                ParsedExploreBook("405", "Retained title", "Retained author", "https://example.com/cover.jpg")
+            )
+        ).collect { book ->
+            if (emitted < 2) assertTrue(requestedUrls.isEmpty())
+            result[book.id] = book
+            emitted++
+        }
 
-        val result = details.load(
-            listOf(ParsedExploreBook("404", "No date", "Author", ""))
-        )
-
-        assertTrue(result.isEmpty())
+        assertEquals(3, emitted)
+        assertEquals(listOf("404", "405"), result.keys.toList())
+        assertEquals("Book 404", result.getValue("404").title)
+        assertTrue(LinovelibDates.isUnknown(result.getValue("404").lastUpdated))
+        assertEquals("Retained title", result.getValue("405").title)
+        assertEquals("Retained author", result.getValue("405").author)
+        assertEquals("https://example.com/cover.jpg", result.getValue("405").coverUrl)
     }
 
     private fun bookHtml(id: String, date: String) = """

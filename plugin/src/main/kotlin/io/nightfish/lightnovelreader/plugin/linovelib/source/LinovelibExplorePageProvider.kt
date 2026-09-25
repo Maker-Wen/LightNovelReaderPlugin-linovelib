@@ -5,42 +5,50 @@ import io.nightfish.lightnovelreader.api.explore.ExploreBooksRow
 import io.nightfish.lightnovelreader.api.explore.ExploreDisplayBook
 import io.nightfish.lightnovelreader.api.web.explore.AbstractDefaultExplorePageProvider
 import io.nightfish.lightnovelreader.api.web.explore.ExploreTapPageDataSource
-import io.nightfish.lightnovelreader.api.web.search.SearchProvider
+import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 class LinovelibExplorePageProvider(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
-    private val searchProvider: SearchProvider,
+    private val searchBookIds: (String) -> Flow<SearchResult>,
     private val host: String = LinovelibUrls.HOST
 ) : AbstractDefaultExplorePageProvider() {
     init {
-        registerTapPage(
-            LinovelibHomeExploreTapPage(
-                htmlLoader = htmlLoader,
-                parser = parser,
-                host = host
+        val wenkuFilters = LinovelibWenkuFilters(host)
+        val wenkuUrl = LinovelibUrls.wenku(host, "lastupdate", 1)
+        registerExpandedPageDataSource(
+            WENKU_PAGE_ID,
+            LinovelibLinkedExpandedPageDataSource(
+                displayTag = "文库", targetUrl = wenkuUrl, htmlLoader = htmlLoader, parser = parser,
+                filters = wenkuFilters.filters, filteredUrl = { wenkuFilters.url() }
             )
         )
-        registerTapPage(
-            LinovelibRowsExploreTapPage(
-                title = "Ranking",
-                htmlLoader = htmlLoader,
-                parser = parser,
-                rowsLoader = { loader, rowParser -> rowParser.parseRankingRows(loader(LinovelibUrls.top(host))) }
+        registerTapPage(LinovelibRowsExploreTapPage("推荐") {
+            parser.parseExploreRows(htmlLoader(host)).map(::expandableRow)
+        })
+        registerTapPage(LinovelibRowsExploreTapPage("文库") {
+            listOf(parser.parseListRow("全部轻小说", htmlLoader(wenkuUrl)).toExploreBooksRow(WENKU_PAGE_ID))
+        })
+        registerTapPage(LinovelibRowsExploreTapPage("排行") {
+            parser.parseRankingRows(htmlLoader(LinovelibUrls.top(host))).map(::expandableRow)
+        })
+        registerTapPage(LinovelibRowsExploreTapPage("完结") {
+            val url = LinovelibUrls.complete(host)
+            listOf(expandableRow(parser.parseListRow("完结轻小说", htmlLoader(url)).copy(expandedUrl = url)))
+        })
+    }
+
+    private fun expandableRow(row: ParsedExploreRow): ExploreBooksRow {
+        val url = row.expandedUrl ?: return row.toExploreBooksRow()
+        val pageId = "linovelib-list-${url.removePrefix(host)}"
+        if (pageId !in exploreExpandedPageDataSourceMap) {
+            registerExpandedPageDataSource(
+                pageId, LinovelibLinkedExpandedPageDataSource(row.title, url, htmlLoader, parser)
             )
-        )
-        registerTapPage(
-            LinovelibRowsExploreTapPage(
-                title = "Complete",
-                htmlLoader = htmlLoader,
-                parser = parser,
-                rowsLoader = { loader, rowParser ->
-                    listOf(rowParser.parseListRow("Complete", loader(LinovelibUrls.complete(host))))
-                }
-            )
-        )
+        }
+        return row.toExploreBooksRow(pageId)
     }
 
     fun registerRelatedPage(tag: String): String {
@@ -67,7 +75,7 @@ class LinovelibExplorePageProvider(
 
     private fun relatedPage(displayTag: String, targetUrl: String?) =
         if (targetUrl == null) {
-            LinovelibRelatedExpandedPageDataSource(searchProvider, displayTag)
+            LinovelibRelatedExpandedPageDataSource(searchBookIds, displayTag)
         } else {
             LinovelibLinkedExpandedPageDataSource(
                 displayTag = displayTag,
@@ -79,38 +87,25 @@ class LinovelibExplorePageProvider(
 
     companion object {
         const val RELATED_PAGE_ID = "linovelib-related"
-    }
-}
-
-private class LinovelibHomeExploreTapPage(
-    private val htmlLoader: suspend (String) -> String,
-    private val parser: LinovelibHtmlParser,
-    private val host: String
-) : ExploreTapPageDataSource {
-    override val title: String = "Home"
-
-    override fun getRowsFlow(): Flow<List<ExploreBooksRow>> = flow {
-        val rows = parser.parseExploreRows(htmlLoader(host))
-            .map { row -> row.toExploreBooksRow() }
-        emit(rows)
+        const val WENKU_PAGE_ID = "linovelib-wenku"
     }
 }
 
 private class LinovelibRowsExploreTapPage(
     override val title: String,
-    private val htmlLoader: suspend (String) -> String,
-    private val parser: LinovelibHtmlParser,
-    private val rowsLoader: suspend (suspend (String) -> String, LinovelibHtmlParser) -> List<ParsedExploreRow>
+    private val rowsLoader: suspend () -> List<ExploreBooksRow>
 ) : ExploreTapPageDataSource {
     override fun getRowsFlow(): Flow<List<ExploreBooksRow>> = flow {
-        emit(rowsLoader(htmlLoader, parser).map { it.toExploreBooksRow() })
+        emit(rowsLoader())
     }
 }
 
-private fun ParsedExploreRow.toExploreBooksRow(): ExploreBooksRow =
+private fun ParsedExploreRow.toExploreBooksRow(expandedPageId: String? = null): ExploreBooksRow =
     ExploreBooksRow(
         title = title,
-        bookList = books.map { book ->
+        expandable = expandedPageId != null,
+        expandedPageDataSourceId = expandedPageId,
+        bookList = books.take(12).map { book ->
             ExploreDisplayBook(
                 id = book.id,
                 title = book.title,

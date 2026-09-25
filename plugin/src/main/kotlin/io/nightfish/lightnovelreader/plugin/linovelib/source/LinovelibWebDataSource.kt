@@ -2,22 +2,25 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import android.content.Context
 import android.net.Uri
-import android.util.Log
 import androidx.navigation.NavController
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
+import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
 import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.book.MutableChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
+import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
 import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
+import io.nightfish.lightnovelreader.api.text.TextProcessingRepositoryApi
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
+import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
 import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
@@ -37,6 +40,7 @@ import org.jsoup.Jsoup
 import org.jsoup.Connection
 import java.io.File
 import java.io.IOException
+import java.net.URI
 
 internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
 
@@ -46,10 +50,16 @@ internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
     provider = "linovelib.com"
 )
 class LinovelibWebDataSource(
-    private val context: Context
+    private val context: Context,
+    localBookDataSource: LocalBookDataSourceApi,
+    textProcessingRepository: TextProcessingRepositoryApi,
+    bookshelfRepository: BookshelfRepositoryApi,
+    webDataSourceManager: WebBookDataSourceManagerApi
 ) : WebBookDataSource {
-    private val site = LinovelibDataSourceConfiguration.site(context)
-    private val parser = LinovelibHtmlParser(host = site.host)
+    private val coverData = LinovelibCoverData(localBookDataSource, textProcessingRepository, bookshelfRepository) {
+        webDataSourceManager.getWebDataSource() === this
+    }
+    private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
     private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
     private val offlineStateFlow = MutableStateFlow(true)
@@ -69,29 +79,30 @@ class LinovelibWebDataSource(
         ::getSearchHtml,
         parser,
         diagnostics,
-        site.host
+        LinovelibUrls.HOST
     )
     override val searchProvider: SearchProvider = linovelibSearchProvider
     private val linovelibExplorePageProvider = LinovelibExplorePageProvider(
         ::getHtml,
         parser,
-        linovelibSearchProvider,
-        site.host
+        linovelibSearchProvider::searchBookIds,
+        LinovelibUrls.HOST
     )
     override val explorePageProvider: ExplorePageProvider = linovelibExplorePageProvider
     private val imageStore = LinovelibImageStore(
         directory = File(context.filesDir, "linovelib/chapter-images"),
         diagnostics = diagnostics,
-        referer = site.host
+        referer = LinovelibUrls.HOST
     )
     override val imageHeader: Map<String, String> = mapOf(
         "User-Agent" to CONTENT_USER_AGENT,
-        "Referer" to site.host,
+        "Referer" to LinovelibUrls.HOST,
         "Accept" to "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8"
     )
 
     @Synchronized
     override fun onLoad() {
+        coverData.onLoad()
         if (!LinovelibDataSourceConfiguration.shouldStartOfflineMonitor(offlineMonitorJob?.isActive == true)) return
         offlineMonitorJob = scope.launch {
             offlineStateFlow.value = isOffLine()
@@ -101,10 +112,10 @@ class LinovelibWebDataSource(
     override suspend fun isOffLine(): Boolean = withContext(Dispatchers.IO) {
         val offline = runCatching {
             executeRequest(
-                url = site.host,
+                url = LinovelibUrls.HOST,
                 userAgent = USER_AGENT,
-                referrer = site.host,
-                acceptLanguage = site.acceptLanguage
+                referrer = LinovelibUrls.HOST,
+                acceptLanguage = ACCEPT_LANGUAGE
             ).statusCode() !in 200..399
         }.getOrElse { true }
         offlineStateFlow.value = offline
@@ -113,12 +124,11 @@ class LinovelibWebDataSource(
 
     override suspend fun getBookInformation(id: String): BookInformation = withContext(Dispatchers.IO) {
         runCatching {
-            parser.parseBookInformation(id, getHtml(LinovelibUrls.book(site.host, id))).toBookInformation()
+            parser.parseBookInformation(id, getHtml(LinovelibUrls.book(LinovelibUrls.HOST, id))).toBookInformation()
                 .takeUnless(BookInformation::isEmpty)
                 ?: fallbackBookInformation(id)
         }.getOrElse { error ->
             error.rethrowIfCancellation()
-            Log.e(TAG, "Failed to get book information: $id", error)
             diagnostics.error("BOOK_ERROR", error, mapOf("bookId" to id))
             fallbackBookInformation(id)
         }
@@ -126,10 +136,9 @@ class LinovelibWebDataSource(
 
     override suspend fun getBookVolumes(id: String): BookVolumes = withContext(Dispatchers.IO) {
         runCatching {
-            parser.parseCatalog(id, getHtml(LinovelibUrls.catalog(site.host, id))).toBookVolumes()
+            parser.parseCatalog(id, getHtml(LinovelibUrls.catalog(LinovelibUrls.HOST, id))).toBookVolumes()
         }.getOrElse { error ->
             error.rethrowIfCancellation()
-            Log.e(TAG, "Failed to get book volumes: $id", error)
             diagnostics.error("CATALOG_ERROR", error, mapOf("bookId" to id))
             BookVolumes.empty(id)
         }
@@ -139,17 +148,17 @@ class LinovelibWebDataSource(
         chapterId: String,
         bookId: String
     ): ChapterContent = withContext(Dispatchers.IO) {
+        val currentChapterId = LinovelibChapterIds.forApp(chapterId)
         runCatching {
-            getChapterContentPages(chapterId, bookId).toChapterContent()
+            getChapterContentPages(currentChapterId, bookId).toChapterContent()
         }.getOrElse { error ->
             error.rethrowIfCancellation()
-            Log.e(TAG, "Failed to get chapter content: bookId=$bookId, chapterId=$chapterId", error)
             diagnostics.error(
                 "CHAPTER_ERROR",
                 error,
                 mapOf("bookId" to bookId, "chapterId" to chapterId)
             )
-            ChapterContent.empty(chapterId)
+            ChapterContent.empty(currentChapterId)
         }
     }
 
@@ -171,26 +180,25 @@ class LinovelibWebDataSource(
     private suspend fun getHtml(url: String): String = executeRequest(
         url = url,
         userAgent = USER_AGENT,
-        referrer = site.host,
-        acceptLanguage = site.acceptLanguage
+        referrer = LinovelibUrls.HOST,
+        acceptLanguage = ACCEPT_LANGUAGE
     ).body()
 
-    private suspend fun getContentHtml(url: String): String = executeRequest(
+    private suspend fun getContentHtml(url: String): Connection.Response = executeRequest(
         url = url,
         userAgent = CONTENT_USER_AGENT,
-        referrer = "${site.host}/",
-        acceptLanguage = site.acceptLanguage,
+        referrer = "${LinovelibUrls.HOST}/",
+        acceptLanguage = ACCEPT_LANGUAGE,
         cookies = mapOf("night" to "0"),
         cacheControl = true
-    ).body()
+    )
 
     private suspend fun getSearchHtml(keyword: String): LinovelibSearchResponse {
-        val searchKeyword = site.searchKeyword(keyword)
         val guardJs = executeRequest(
-            url = "${site.host}/search.html?search_guard=js",
+            url = "${LinovelibUrls.HOST}/search.html?search_guard=js",
             userAgent = CONTENT_USER_AGENT,
-            referrer = "${site.host}/",
-            acceptLanguage = site.acceptLanguage,
+            referrer = "${LinovelibUrls.HOST}/",
+            acceptLanguage = ACCEPT_LANGUAGE,
             cacheControl = true,
             includeSessionCookies = false
         )
@@ -198,10 +206,10 @@ class LinovelibWebDataSource(
         require(jsToken.isNotEmpty()) { "Missing jieqiSearchJs search guard cookie" }
 
         val guardCss = executeRequest(
-            url = "${site.host}/search.html?search_guard=css",
+            url = "${LinovelibUrls.HOST}/search.html?search_guard=css",
             userAgent = CONTENT_USER_AGENT,
-            referrer = "${site.host}/",
-            acceptLanguage = site.acceptLanguage,
+            referrer = "${LinovelibUrls.HOST}/",
+            acceptLanguage = ACCEPT_LANGUAGE,
             cacheControl = true,
             includeSessionCookies = false
         )
@@ -209,10 +217,10 @@ class LinovelibWebDataSource(
         require(cssToken.isNotEmpty()) { "Missing jieqiSearchCss search guard cookie" }
 
         val redeem = executeRequest(
-            url = "${site.host}/search.html?search_guard=redeem&r=${System.currentTimeMillis()}",
+            url = "${LinovelibUrls.HOST}/search.html?search_guard=redeem&r=${System.currentTimeMillis()}",
             userAgent = CONTENT_USER_AGENT,
-            referrer = "${site.host}/",
-            acceptLanguage = site.acceptLanguage,
+            referrer = "${LinovelibUrls.HOST}/",
+            acceptLanguage = ACCEPT_LANGUAGE,
             cookies = LinovelibSearchGuard.guardCookies(jsToken, cssToken),
             cacheControl = true,
             includeSessionCookies = false
@@ -221,15 +229,15 @@ class LinovelibWebDataSource(
         require(ticketToken.isNotEmpty()) { "Missing jieqiSearchTicket search cookie" }
         diagnostics.info(
             "SEARCH_GUARD_OK",
-            mapOf("keyword" to keyword, "convertedKeyword" to searchKeyword)
+            mapOf("keyword" to keyword)
         )
 
-        val encodedKeyword = java.net.URLEncoder.encode(searchKeyword, "UTF-8")
+        val encodedKeyword = java.net.URLEncoder.encode(keyword, "UTF-8")
         val response = executeRequest(
-            url = "${site.host}/search.html?searchkey=$encodedKeyword",
+            url = "${LinovelibUrls.HOST}/search.html?searchkey=$encodedKeyword",
             userAgent = CONTENT_USER_AGENT,
-            referrer = "${site.host}/",
-            acceptLanguage = site.acceptLanguage,
+            referrer = "${LinovelibUrls.HOST}/",
+            acceptLanguage = ACCEPT_LANGUAGE,
             cookies = LinovelibSearchGuard.ticketCookies(ticketToken),
             cacheControl = true,
             includeSessionCookies = false
@@ -400,7 +408,7 @@ class LinovelibWebDataSource(
         val websiteChapterId = LinovelibChapterIds.forWebsite(chapterId)
         val pages = mutableListOf<ParsedChapterContent>()
         val visitedUrls = mutableSetOf<String>()
-        var nextUrl = LinovelibUrls.fullChapter(site.host, bookId, websiteChapterId)
+        var nextUrl = LinovelibUrls.fullChapter(LinovelibUrls.HOST, bookId, websiteChapterId)
         var pageCount = 0
         diagnostics.info(
             "CHAPTER_START",
@@ -429,14 +437,17 @@ class LinovelibWebDataSource(
                 break
             }
             pageCount++
+            val response = getContentHtml(nextUrl)
+            val finalUrl = response.url().toString()
             val page = parser.parseChapterContent(
                 chapterId = websiteChapterId,
-                html = getContentHtml(nextUrl),
-                baseUrl = site.host,
+                html = response.body(),
+                baseUrl = finalUrl,
                 restoreParagraphOrder = true
             )
             pages.add(page)
-            val candidate = absoluteUrl(page.nextPageUrl, site.host)
+            val candidate = page.nextPageUrl.takeIf(String::isNotBlank)
+                ?.let { URI(finalUrl).resolve(it).toString() }.orEmpty()
             val candidateChapterId = parser.chapterIdFromHref(candidate)
             val isSameChapterPage = candidate.isNotBlank() && candidateChapterId == websiteChapterId
             val textBlocks = page.blocks.filterIsInstance<ParsedContentBlock.Text>()
@@ -504,35 +515,11 @@ class LinovelibWebDataSource(
         )
     }
 
-    private fun absoluteUrl(url: String, host: String): String {
-        if (url.isBlank()) return ""
-        return when {
-            url.startsWith("//") -> "https:$url"
-            url.startsWith("http://") || url.startsWith("https://") -> url
-            url.startsWith("/") -> host + url
-            else -> "$host/$url"
-        }
-    }
-
     private fun elapsedMilliseconds(startedAt: Long): Long =
         (System.nanoTime() - startedAt) / 1_000_000
 
-    private fun ParsedBookInformation.toBookInformation(): BookInformation {
-        if (title.isEmpty()) return BookInformation.empty(id)
-        return MutableBookInformation(
-            id = id,
-            title = title,
-            subtitle = subtitle,
-            coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
-            author = author,
-            description = description,
-            tags = LinovelibRelatedSearch.displayTags(author, tags, publishingHouse),
-            publishingHouse = "",
-            wordCount = WordCount(wordCount),
-            lastUpdated = lastUpdated.atStartOfDay(),
-            isComplete = isComplete
-        )
-    }
+    private fun ParsedBookInformation.toBookInformation(): BookInformation =
+        if (title.isEmpty()) BookInformation.empty(id) else toMutableBookInformation()
 
     private fun fallbackBookInformation(id: String): BookInformation =
         parser.cachedBookInformation(id)?.toBookInformation()
@@ -592,9 +579,9 @@ class LinovelibWebDataSource(
     }
 
     private companion object {
-        const val TAG = "LinovelibWebDataSource"
         const val USER_AGENT = "Mozilla/5.0 (Linux; Android 12) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Mobile Safari/537.36"
         const val CONTENT_USER_AGENT = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36 EdgA/135.0.0.0"
+        const val ACCEPT_LANGUAGE = "zh-CN,zh;q=0.9,en;q=0.7"
         const val MAX_CHAPTER_PAGES = 100
     }
 }

@@ -1,32 +1,30 @@
 # LightNovelReaderPlugin-linovelib
 
-一个面向 [LightNovelReader](https://github.com/dmzz-yyhyy/LightNovelReader) 的 Linovelib 数据源插件，可在插件设置中切换简体站与繁体站。
+一个面向 [LightNovelReader](https://github.com/dmzz-yyhyy/LightNovelReader) 的 Linovelib 数据源插件，统一使用当前可用的简体站入口。
 
-本项目 fork 自 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，增加简体站与繁体站切换。
-
-> 原项目版权归原作者所有。本项目继续使用 Apache License 2.0，详见 [LICENSE](LICENSE)。
+> 本项目继续使用 Apache License 2.0，详见 [LICENSE](LICENSE)。
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
 [![LightNovelReader](https://img.shields.io/badge/LightNovelReader-plugin-blue)](https://github.com/dmzz-yyhyy/LightNovelReader)
-[![Plugin API](https://img.shields.io/badge/Plugin%20API-2-orange)]()
+[![Plugin API](https://img.shields.io/badge/Plugin%20API-3-orange)]()
 [![Android](https://img.shields.io/badge/Android-7%2B-3DDC84?logo=android&logoColor=white)]()
 [![Release](https://img.shields.io/github/v/release/Maker-Wen/LightNovelReaderPlugin-linovelib?include_prereleases&label=release)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 [![Downloads](https://img.shields.io/github/downloads/Maker-Wen/LightNovelReaderPlugin-linovelib/total?label=downloads)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 
 ## 下载
 
-兼容 LightNovelReader 1.2.2 的 `2.0.0` 发布产物可从 Releases 下载，也可以按下方[构建](#构建)步骤生成。
+已发布版本可从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载。当前源码为 `2.1.0` 开发版，面向 LightNovelReader 1.2.2 / API 3，可按下方[构建](#构建)步骤生成。本轮开发统一使用该版本名，内部 `versionCode` 保留为 `34`。
 
 ## 功能
 
-- 支持 Linovelib 的探索、排行榜和完本页面
-- 支持书名、作品 ID、作者和标签搜索
+- 提供推荐、文库、排行、完结四个栏目，支持实际书单的更多入口
+- 文库展开页提供地区、主题、排序、动画、字数和状态六项单选筛选，切换条件后从第一页重新加载；主题筛选存在[已知操作限制](#已知问题)
+- 支持书名、作品 ID、作者和标签搜索；先显示列表结果，再补全详情，详情失败不丢弃已找到的书
 - 支持完整章节加载
 - 支持章节插图，图片保持文内显示
 - 支持离线缓存和 EPUB 导出
-- 支持点击作品标签、作者和出版社跳转相关搜索
-- 支持在插件设置中切换简体站与繁体站（重启应用后生效）
-- 默认使用简体站
+- 提供作品标签和作者的相关搜索入口；无已知书单链接时只检索书籍 ID，由本体加载详情。入口可用性受宿主限制，出版社当前仅显示，详见[已知问题](#已知问题)
+- 统一使用 `https://www.bilinovel.net` 简体入口；繁体显示使用本体的“简繁转换”设置
 
 ## 与上游插件的区别
 
@@ -35,32 +33,39 @@
 | 插件名 | Linovelib TW | Linovelib |
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib` |
 | 数据源 id | `linovelib_tw.hashCode()` | `linovelib.hashCode()`（`-1488977864`） |
-| 内容来源 | 繁体输出 | 简体站 / 繁体站可切换 |
-| 版本名 | 1.1.2 | 2.0.0 |
+| 内容来源 | 简体正文转繁体输出 | 简体站原文 |
+| 版本名 | 1.1.2 | 2.1.0（开发版） |
 
 本项目与上游插件使用相同 applicationId，不能同时安装。
 
 ## 兼容性
 
 - LightNovelReader 1.2.2
-- Plugin API 2
+- Plugin API 3
 - Android 7（API 24）及以上
 
-本版本使用新的统一包名和数据源 id，不兼容旧版 `Linovelib 简体` 的升级与数据迁移。
+本次保留本项目 `2.0.0` 的包名和数据源 ID，版本号递增，可由使用相同发行签名的新包覆盖升级。API 4 适配另行处理。
 
-Android 10（API 29）及以上会使用 Android ICU 将搜索词转换为所选站点偏好的简体或繁体；Android 7–9 保持搜索词原文。站点返回的书籍内容保持原文。
+所有支持的 Android 版本均按搜索词原文请求站点，不做繁简转换。站点返回的书籍内容保持原文。
+
+## 已知问题
+
+以下两项 P2 在 `2.1.0` 中已接受为已知限制，暂缓修复，随本轮代码提交保留：
+
+1. 主题筛选弹窗无法完整操作。API 3 宿主的单选弹窗不能滚动，61 个主题选项会挤占确认按钮空间，部分选项无法到达。LightNovelReader `1.2.2a` 模拟器已复现；当前不保证主题筛选可正常应用，地区等较短选项的筛选可用。后续需调整筛选交互或配套修复宿主弹窗，并重新验证。
+2. 出版社无法点击进入关联书单。当前将出版社填入原生字段，API 3 宿主只展示该字段，点击回调为空；原来的可点击标签入口已移除。因此出版社仍可见，但不能从该入口跳转，即使修复标签导航 ABI 也不会自动恢复。后续需恢复可点击入口或配套修复宿主。
 
 ## 安装
 
-安装前请卸载旧版 `Linovelib 简体` 或原版 `Linovelib TW`。
+从本项目 `2.0.0` 升级时直接导入新包，不要先卸载。覆盖升级需要新旧包签名一致
 
 1. 从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载 `*.apk.lnrp`
 2. 使用 LightNovelReader 打开该文件
 3. 在「扩展插件」中启用 `Linovelib`
 4. 在数据源中选择 `Linovelib`
-5. 如需切换站点，在插件详情的「设置」页选择简体站或繁体站并重启应用
+5. 如需繁体显示，在本体阅读设置中开启“简繁转换”
 
-旧数据源下已经添加的书不会自动迁移，需要在 `Linovelib` 下重新搜索和添加。
+沿用正式 `2.0.0` 的章节编号和图片缓存目录，同源覆盖升级不改写阅读进度或目录。
 
 ## 构建
 
@@ -86,14 +91,6 @@ plugin/build/outputs/apk/release/plugin-release.apk.lnrp
 ```
 
 Release 签名通过上面的四个环境变量注入。未提供签名变量时产物为 unsigned，不能直接安装；GitHub Actions 会自动使用仓库 Secrets 完成签名。
-
-## 说明
-
-- 本插件保留原插件的图片、搜索和章节处理逻辑，并使用 LightNovelReader 1.2.2 支持的 API 2。
-- 切换站点会保留书架与阅读进度；已经离线缓存的章节不会自动转换，在线打开后会由所选站点内容刷新。
-- 图片仍然按原插件的 `simpleText` / `image` 组件顺序输出，因此文内插图位置保持不变。
-- 数据源来自第三方站点。本项目与任何内容提供方没有关联，请自行判断版权和来源风险。
-- Release 产物使用 release keystore 签名。
 
 ## 致谢
 

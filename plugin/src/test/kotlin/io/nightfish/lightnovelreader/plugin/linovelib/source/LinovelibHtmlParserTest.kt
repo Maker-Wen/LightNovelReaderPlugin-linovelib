@@ -2,12 +2,68 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 
 class LinovelibHtmlParserTest {
     private val parser = LinovelibHtmlParser()
+
+    @Test
+    fun expandedRowsUseActualSupportedMoreLinks() {
+        fun module(url: String) = """
+            <section class="module">
+              <header class="module-header"><h2 class="module-title">Books</h2>
+                <a class="module-header-btn" href="$url">更多</a>
+              </header>
+              <a class="book-layout" href="/novel/1.html"><h4 class="book-title">Book</h4></a>
+            </section>
+        """.trimIndent()
+
+        assertEquals(
+            "https://www.bilinovel.net/wenku/postdate_0_0_0_0_0_0_0_1_0.html",
+            parser.parseExploreRows(module("/wenku/postdate_0_0_0_0_0_0_0_1_0.html")).single().expandedUrl
+        )
+        listOf("/sort/", "/gocomic?0", "https://example.com/wenku/", "javascript:alert(1)").forEach { url ->
+            assertEquals(null, parser.parseExploreRows(module(url)).single().expandedUrl)
+        }
+        val ranking = """
+            <div class="category-list">
+              <a class="fl-header" href="/top/monthvisit/1.html"><div class="fl-header-l">月榜</div></a>
+              <ul class="fl-content"><li><a href="/novel/1.html">Book</a></li></ul>
+            </div>
+        """.trimIndent()
+        assertEquals("https://www.bilinovel.net/top/monthvisit/1.html", parser.parseRankingRows(ranking).single().expandedUrl)
+    }
+
+    @Test
+    fun listResultsAreNotTruncatedBeforeSearchOrPagination() {
+        val html = (1..40).joinToString(prefix = "<ol class=\"book-ol\">", postfix = "</ol>") { id ->
+            "<li class=\"book-li\"><a class=\"book-layout\" href=\"/novel/$id.html\"><h4 class=\"book-title\">Book $id</h4></a></li>"
+        }
+        val row = parser.parseListRow("Search", html)
+        assertEquals((1..40).map(Int::toString), row.books.map { it.id })
+    }
+
+    @Test
+    fun parseBookInformationRecognizesSimplifiedAndTraditionalCompletionStatus() {
+        for ((status, complete) in listOf(
+            "完结" to true, "完結" to true,
+            "连载中" to false, "連載中" to false, "" to false
+        )) {
+            for (statusHtml in listOf(
+                "<meta property=\"og:novel:status\" content=\"$status\" />",
+                "<p class=\"book-meta book-layout-inline\">10万字 | $status</p>"
+            )) {
+                val book = parser.parseBookInformation(
+                    "1", "<h1 class=\"book-title\">Example</h1>$statusHtml"
+                )
+                assertEquals(statusHtml, complete, book.isComplete)
+            }
+        }
+    }
 
     @Test
     fun parseBookInformationReadsMetadataFromNovelPage() {
@@ -42,7 +98,7 @@ class LinovelibHtmlParserTest {
         assertEquals("1", book.id)
         assertEquals("High School DxD", book.title)
         assertEquals("DxD", book.subtitle)
-        assertEquals("https://tw.linovelib.com/files/article/image/0/1/1s.jpg", book.coverUrl)
+        assertEquals("https://www.bilinovel.net/files/article/image/0/1/1s.jpg", book.coverUrl)
         assertEquals("Ichiei Ishibumi", book.author)
         assertEquals("Line one\nLine two", book.description)
         assertEquals(listOf("School", "Fantasy"), book.tags)
@@ -51,23 +107,34 @@ class LinovelibHtmlParserTest {
         assertEquals(LocalDate.of(2024, 2, 25), book.lastUpdated)
         assertTrue(book.isComplete)
         assertEquals(
-            "https://tw.linovelib.com/authorarticle/Ichiei-Ishibumi.html",
+            "https://www.bilinovel.net/authorarticle/Ichiei-Ishibumi.html",
             parser.relatedTarget("\u4f5c\u8005\uff1aIchiei Ishibumi")
         )
         assertEquals(
-            "https://tw.linovelib.com/wenku/lastupdate_1_0_0_0_0_0_0_1_0.html",
+            "https://www.bilinovel.net/wenku/lastupdate_1_0_0_0_0_0_0_1_0.html",
             parser.relatedTarget("School")
         )
         assertEquals(
-            "https://tw.linovelib.com/wenku/fujimi/1.html",
+            "https://www.bilinovel.net/wenku/fujimi/1.html",
             parser.relatedTarget("Fujimi Fantasia Bunko")
         )
     }
 
     @Test
-    fun parserResolvesRelativeUrlsFromSelectedSite() {
-        val simplifiedParser = LinovelibHtmlParser(host = LinovelibSite.SIMPLIFIED.host)
-        val book = simplifiedParser.parseBookInformation(
+    fun invalidBookInformationDoesNotReplaceSuccessfulCache() {
+        val cached = parser.parseBookInformation("1", "<h1 class=\"book-title\">Book</h1>")
+
+        listOf("<html></html>", "<meta property=\"og:novel:book_name\" content=\"   \" />").forEach { html ->
+            assertTrue(parser.parseBookInformation("1", html).title.isBlank())
+            assertSame(cached, parser.cachedBookInformation("1"))
+            assertTrue(parser.parseBookInformation("2", html).title.isBlank())
+            assertNull(parser.cachedBookInformation("2"))
+        }
+    }
+
+    @Test
+    fun parserResolvesRelativeUrlsFromDefaultSite() {
+        val book = parser.parseBookInformation(
             "1804",
             """
                 <h1 class="book-title">World Series</h1>
@@ -76,7 +143,7 @@ class LinovelibHtmlParserTest {
         )
 
         assertEquals(
-            "https://www.bilinovel.com/files/article/image/1/1804/1804s.jpg",
+            "https://www.bilinovel.net/files/article/image/1/1804/1804s.jpg",
             book.coverUrl
         )
     }
@@ -138,9 +205,9 @@ class LinovelibHtmlParserTest {
         assertEquals(
             listOf(
                 ParsedContentBlock.Text("Hello again."),
-                ParsedContentBlock.Image("https://tw.linovelib.com/files/image.jpg"),
-                ParsedContentBlock.Image("https://tw.linovelib.com/files/hidden-1.jpg"),
-                ParsedContentBlock.Image("https://tw.linovelib.com/files/hidden-2.jpg"),
+                ParsedContentBlock.Image("https://www.bilinovel.net/files/image.jpg"),
+                ParsedContentBlock.Image("https://www.bilinovel.net/files/hidden-1.jpg"),
+                ParsedContentBlock.Image("https://www.bilinovel.net/files/hidden-2.jpg"),
                 ParsedContentBlock.Text("Short notes follow.")
             ),
             chapter.blocks
@@ -162,7 +229,7 @@ class LinovelibHtmlParserTest {
         assertEquals(
             listOf(
                 ParsedContentBlock.Text("Before image."),
-                ParsedContentBlock.Image("https://tw.linovelib.com/files/inline.jpg"),
+                ParsedContentBlock.Image("https://www.bilinovel.net/files/inline.jpg"),
                 ParsedContentBlock.Text("After image.")
             ),
             chapter.blocks
@@ -228,7 +295,7 @@ class LinovelibHtmlParserTest {
         val chapter = parser.parseChapterContent(
             chapterId = "61960",
             html = html,
-            baseUrl = LinovelibUrls.CONTENT_HOST,
+            baseUrl = LinovelibUrls.HOST,
             restoreParagraphOrder = true
         )
 
@@ -239,34 +306,33 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parserAppliesTextConverterToChapterAndSearchResults() {
-        val convertingParser = LinovelibHtmlParser { text -> "converted:$text" }
-        val chapter = convertingParser.parseChapterContent(
+    fun parserPreservesOriginalTextInChapterAndSearchResults() {
+        val chapter = parser.parseChapterContent(
             "10",
             """
-                <h1 id="atitle">Chapter title</h1>
-                <div id="acontent"><p>Chapter body</p></div>
+                <h1 id="atitle">章節标题</h1>
+                <div id="acontent"><p>正文內容与原文</p></div>
             """.trimIndent()
         )
-        val searchRow = convertingParser.parseListRow(
+        val searchRow = parser.parseListRow(
             "Search",
             """
                 <ol class="book-ol"><li class="book-li">
                   <a class="book-layout" href="/novel/10.html">
-                    <h4 class="book-title">Book title</h4>
-                    <p class="book-author">Author Writer</p>
+                    <h4 class="book-title">原始書名</h4>
+                    <p class="book-author">Author 作家名字</p>
                   </a>
                 </li></ol>
             """.trimIndent()
         )
 
-        assertEquals("converted:Chapter title", chapter.title)
+        assertEquals("章節标题", chapter.title)
         assertEquals(
-            listOf(ParsedContentBlock.Text("converted:Chapter body")),
+            listOf(ParsedContentBlock.Text("正文內容与原文")),
             chapter.blocks
         )
-        assertEquals("converted:Book title", searchRow.books.single().title)
-        assertEquals("converted:Writer", searchRow.books.single().author)
+        assertEquals("原始書名", searchRow.books.single().title)
+        assertEquals("作家名字", searchRow.books.single().author)
     }
 
     @Test
@@ -274,13 +340,13 @@ class LinovelibHtmlParserTest {
         val chapter = parser.parseChapterContent(
             chapterId = "10",
             html = "<div id=\"acontent\"><img src=\"/files/illustration.jpg\"></div>",
-            baseUrl = LinovelibUrls.CONTENT_HOST
+            baseUrl = LinovelibUrls.HOST
         )
 
         assertEquals(
             listOf(
                 ParsedContentBlock.Image(
-                    "${LinovelibUrls.CONTENT_HOST}/files/illustration.jpg"
+                    "${LinovelibUrls.HOST}/files/illustration.jpg"
                 )
             ),
             chapter.blocks
@@ -313,12 +379,11 @@ class LinovelibHtmlParserTest {
         assertEquals("Hot Books", rows[0].title)
         assertEquals(
             listOf(
-                ParsedExploreBook("1", "High School DxD", "Ichiei Ishibumi", "https://tw.linovelib.com/files/article/image/0/1/1s.jpg"),
-                ParsedExploreBook("2", "Another Novel", "Tester", "https://tw.linovelib.com/files/article/image/0/2/2s.jpg")
+                ParsedExploreBook("1", "High School DxD", "Ichiei Ishibumi", "https://www.bilinovel.net/files/article/image/0/1/1s.jpg"),
+                ParsedExploreBook("2", "Another Novel", "Tester", "https://www.bilinovel.net/files/article/image/0/2/2s.jpg")
             ),
             rows[0].books
         )
-        assertEquals(listOf(rows[0].books[0]), parser.searchExploreBooks("DxD", rows))
     }
 
     @Test
@@ -364,8 +429,8 @@ class LinovelibHtmlParserTest {
         assertEquals("Monthly", rows[0].title)
         assertEquals(
             listOf(
-                ParsedExploreBook("10", "Ranked Book", "", "https://tw.linovelib.com/files/article/image/0/10/10s.jpg"),
-                ParsedExploreBook("11", "Second Book", "", "https://tw.linovelib.com/files/article/image/0/11/11s.jpg")
+                ParsedExploreBook("10", "Ranked Book", "", "https://www.bilinovel.net/files/article/image/0/10/10s.jpg"),
+                ParsedExploreBook("11", "Second Book", "", "https://www.bilinovel.net/files/article/image/0/11/11s.jpg")
             ),
             rows[0].books
         )
@@ -387,7 +452,7 @@ class LinovelibHtmlParserTest {
 
         val book = parser.parseRankingRows(html).single().books.single()
 
-        assertEquals("https://tw.linovelib.com/files/article/image/3/3768/3768s.jpg", book.coverUrl)
+        assertEquals("https://www.bilinovel.net/files/article/image/3/3768/3768s.jpg", book.coverUrl)
     }
 
     @Test
@@ -408,7 +473,7 @@ class LinovelibHtmlParserTest {
 
         assertEquals("Complete", row.title)
         assertEquals(
-            listOf(ParsedExploreBook("20", "Complete Book", "Writer", "https://tw.linovelib.com/files/article/image/0/20/20s.jpg")),
+            listOf(ParsedExploreBook("20", "Complete Book", "Writer", "https://www.bilinovel.net/files/article/image/0/20/20s.jpg")),
             row.books
         )
     }
@@ -432,24 +497,7 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun searchExploreBooksMatchesSimplifiedAndTraditionalKeywords() {
-        val rows = listOf(
-            ParsedExploreRow(
-                "Books",
-                listOf(
-                    ParsedExploreBook("3247", "刀劍神域 進擊篇 Progressive", "川原礫", ""),
-                    ParsedExploreBook("8", "歡迎來到實力至上主義的教室", "衣笠彰梧", "")
-                )
-            )
-        )
-
-        assertEquals("3247", parser.searchExploreBooks("刀剑神域", rows).single().id)
-        assertEquals("8", parser.searchExploreBooks("实力至上", rows).single().id)
-        assertEquals("3247", parser.searchExploreBooks("川原砾", rows).single().id)
-    }
-
-    @Test
-    fun parseRankingRowsCanBeSearchedWithSimplifiedKeyword() {
+    fun parseRankingRowsPreservesOriginalTraditionalTitle() {
         val rankingHtml = """
             <div class="category-list">
               <a class="fl-header"><div class="fl-header-l">Monthly</div></a>
@@ -459,6 +507,8 @@ class LinovelibHtmlParserTest {
             </div>
         """.trimIndent()
         val parsedRows = parser.parseRankingRows(rankingHtml)
-        assertEquals("8", parser.searchExploreBooks("\u5b9e\u529b\u81f3\u4e0a", parsedRows).single().id)
+        val book = parsedRows.single().books.single()
+        assertEquals("8", book.id)
+        assertEquals("歡迎來到實力至上主義的教室", book.title)
     }
 }
