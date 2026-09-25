@@ -13,7 +13,7 @@
 
 ## 下载
 
-已发布版本可从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载。当前源码为 `2.1.0` 开发版，面向 LightNovelReader 1.2.2 / API 3，可按下方[构建](#构建)步骤生成。本轮开发统一使用该版本名，内部 `versionCode` 保留为 `34`。
+已发布版本可从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载。当前版本为 `2.1.0`，面向 LightNovelReader 1.2.2 / API 3，也可按下方[构建](#构建)步骤生成。
 
 ## 功能
 
@@ -34,7 +34,7 @@
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib` |
 | 数据源 id | `linovelib_tw.hashCode()` | `linovelib.hashCode()`（`-1488977864`） |
 | 内容来源 | 简体正文转繁体输出 | 简体站原文 |
-| 版本名 | 1.1.2 | 2.1.0（开发版） |
+| 版本名 | 1.1.2 | 2.1.0 |
 
 本项目与上游插件使用相同 applicationId，不能同时安装。
 
