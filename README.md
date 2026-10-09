@@ -13,7 +13,7 @@
 
 ## 下载
 
-已发布版本可从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载。当前版本为 `2.1.0`，面向 LightNovelReader 1.2.2 / API 3，也可按下方[构建](#构建)步骤生成。
+已发布版本可从 [Releases](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases) 下载。当前版本为 `2.1.1`，面向 LightNovelReader 1.2.2 / API 3，也可按下方[构建](#构建)步骤生成。
 
 ## 功能
 
@@ -34,7 +34,7 @@
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib` |
 | 数据源 id | `linovelib_tw.hashCode()` | `linovelib.hashCode()`（`-1488977864`） |
 | 内容来源 | 简体正文转繁体输出 | 简体站原文 |
-| 版本名 | 1.1.2 | 2.1.0 |
+| 版本名 | 1.1.2 | 2.1.1 |
 
 本项目与上游插件使用相同 applicationId，不能同时安装。
 
@@ -50,7 +50,7 @@
 
 ## 已知问题
 
-已发布的 `2.1.0` 存在以下两项已知限制：
+当前版本存在以下两项已知限制：
 
 1. 主题筛选弹窗无法完整操作。API 3 宿主的单选弹窗不能滚动，61 个主题选项会挤占确认按钮空间，部分选项无法到达。LightNovelReader `1.2.2a` 模拟器已复现；当前不保证主题筛选可正常应用，地区等较短选项的筛选可用。后续需调整筛选交互或配套修复宿主弹窗，并重新验证。
 2. 标签无法点击跳转。官方宿主 LightNovelReader `1.2.2a` 的标签回调接口存在兼容问题，点击标签无法进入关联页面。
