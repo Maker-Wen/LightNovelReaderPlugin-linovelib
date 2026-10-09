@@ -22,7 +22,7 @@ internal class LinovelibImageStore(
     private val directory: File,
     private val downloader: (suspend (String) -> DownloadedLinovelibImage)? = null,
     private val diagnostics: LinovelibDiagnostics,
-    private val referer: String = LinovelibUrls.CONTENT_HOST
+    private val referer: String = LinovelibUrls.HOST
 ) {
     suspend fun localize(blocks: List<ParsedContentBlock>): List<ParsedContentBlock> {
         val imageUrls = blocks.filterIsInstance<ParsedContentBlock.Image>()
@@ -104,21 +104,26 @@ internal class LinovelibImageStore(
         .digest(url.toByteArray(Charsets.UTF_8))
         .joinToString("") { byte -> HEX_DIGITS[(byte.toInt() and 0xff) ushr 4].toString() + HEX_DIGITS[byte.toInt() and 0x0f] }
 
-    private companion object {
-        const val MAX_CONCURRENT_DOWNLOADS = 2
-        const val MAX_ATTEMPTS = 2
-        const val MAX_IMAGE_BYTES = 15 * 1024 * 1024
-        const val HEX_DIGITS = "0123456789abcdef"
-        const val USER_AGENT =
+    internal companion object {
+        private const val MAX_CONCURRENT_DOWNLOADS = 2
+        private const val MAX_ATTEMPTS = 2
+        private const val MAX_IMAGE_BYTES = 15 * 1024 * 1024
+        private const val HEX_DIGITS = "0123456789abcdef"
+        private const val USER_AGENT =
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Mobile Safari/537.36"
 
-        suspend fun downloadImage(url: String, referer: String): DownloadedLinovelibImage {
-            var lastFailure: Throwable? = null
+        private class ImageHttpException(val statusCode: Int) :
+            IOException("Image server returned HTTP $statusCode")
+
+        internal suspend fun downloadImage(url: String, referer: String): DownloadedLinovelibImage {
+            var lastFailure: IOException? = null
             repeat(MAX_ATTEMPTS) { attempt ->
                 try {
                     return withContext(Dispatchers.IO) { executeDownload(url, referer) }
-                } catch (throwable: Throwable) {
-                    throwable.rethrowIfCancellation()
+                } catch (throwable: IOException) {
+                    if (throwable is ImageHttpException &&
+                        LinovelibRequestPolicy.retryDelayMillis(throwable.statusCode, null, attempt) == null
+                    ) throw throwable
                     lastFailure = throwable
                     if (attempt < MAX_ATTEMPTS - 1) delay(500L * (attempt + 1))
                 }
@@ -126,7 +131,7 @@ internal class LinovelibImageStore(
             throw lastFailure ?: IOException("Image download failed")
         }
 
-        fun executeDownload(url: String, referer: String): DownloadedLinovelibImage {
+        private fun executeDownload(url: String, referer: String): DownloadedLinovelibImage {
             val connection = URL(url).openConnection() as HttpURLConnection
             try {
                 connection.instanceFollowRedirects = true
@@ -136,7 +141,7 @@ internal class LinovelibImageStore(
                 connection.setRequestProperty("Referer", "${referer.trimEnd('/')}/")
                 connection.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
                 val status = connection.responseCode
-                if (status !in 200..299) throw IOException("Image server returned HTTP $status")
+                if (status !in 200..299) throw ImageHttpException(status)
                 val bytes = connection.inputStream.buffered().use(::readLimited)
                 return DownloadedLinovelibImage(bytes, connection.contentType.orEmpty())
             } finally {
@@ -144,7 +149,7 @@ internal class LinovelibImageStore(
             }
         }
 
-        fun readLimited(input: java.io.InputStream): ByteArray {
+        private fun readLimited(input: java.io.InputStream): ByteArray {
             val output = ByteArrayOutputStream()
             val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
             while (true) {
@@ -191,7 +196,8 @@ internal object LinovelibImageRules {
         uri.scheme.equals("https", ignoreCase = true) && (
             host == "readpai.com" || host.endsWith(".readpai.com") ||
                 host == "linovelib.com" || host.endsWith(".linovelib.com") ||
-                host == "bilinovel.com" || host.endsWith(".bilinovel.com")
+                host == "bilinovel.com" || host.endsWith(".bilinovel.com") ||
+                host == "bilinovel.net" || host.endsWith(".bilinovel.net")
             )
     }.getOrDefault(false)
 }

@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing tag to build and publish'
         required: true
-        default: 'v2.0.0'
+        default: 'v2.1.1'
       publish:
         description: 'Publish/update the GitHub release'
         type: boolean
@@ -98,21 +98,12 @@ jobs:
           SHA="${{ steps.asset.outputs.sha }}"
           VERSION="${TAG#v}"
           cat > release-notes.md <<'EOF'
-          ## Linovelib
-
-          基于 [j955229/LightNovelReaderPlugin-linovelib](https://github.com/j955229/LightNovelReaderPlugin-linovelib)，支持切换简体站与繁体站。
-
-          - 插件名：`Linovelib`
-          - applicationId：`io.nightfish.lightnovelreader.plugin.linovelib`
-          - 数据源 id：`linovelib.hashCode()`（`-1488977864`）
-          - 兼容 LightNovelReader 1.2.2 / Plugin API 2
-          - 支持简体站 / 繁体站切换
-          - release 签名构建
+          优化加载状态。
           EOF
           printf '\nSHA-256: `%s`\n' "$SHA" >> release-notes.md
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
           else
-            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
+            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md --draft
           fi

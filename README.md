@@ -74,7 +74,7 @@
 - JDK 17
 - Android SDK 36
 
-当前 `main` 分支源码仍为 `2.0.0`。构建 `2.1.1` 请先获取对应发布标签的源码：
+当前 `main` 分支源码为 `2.1.1`。以下步骤使用对应发布标签构建：
 
 ```bash
 git clone --branch v2.1.1 --depth 1 https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib.git

@@ -19,25 +19,16 @@ class LinovelibDataSourceConfigurationTest {
     }
 
     @Test
-    fun `site setting defaults to simplified and restores known values`() {
-        assertEquals(LinovelibSite.SIMPLIFIED, LinovelibSite.fromStoredValue(null))
-        assertEquals(LinovelibSite.SIMPLIFIED, LinovelibSite.fromStoredValue("unknown"))
-        assertEquals(LinovelibSite.TRADITIONAL, LinovelibSite.fromStoredValue("TRADITIONAL"))
-    }
-
-    @Test
-    fun `site host controls every book endpoint`() {
-        assertEquals(
-            "https://www.bilinovel.com/novel/1804.html",
-            LinovelibUrls.book(LinovelibSite.SIMPLIFIED.host, "1804")
-        )
-        assertEquals(
-            "https://tw.linovelib.com/novel/1804/catalog",
-            LinovelibUrls.catalog(LinovelibSite.TRADITIONAL.host, "1804")
-        )
-        assertEquals(
-            "https://tw.linovelib.com/novel/1804/65891.html",
-            LinovelibUrls.fullChapter(LinovelibSite.TRADITIONAL.host, "1804", "65891")
-        )
+    fun `every default endpoint uses the single site`() {
+        val host = "https://www.bilinovel.net"
+        assertEquals(host, LinovelibUrls.HOST)
+        assertEquals("$host/top.html", LinovelibUrls.top(host))
+        assertEquals("$host/topfull/postdate/1.html", LinovelibUrls.complete(host))
+        assertEquals("$host/wenku/lastupdate_0_0_0_0_0_0_0_1_0.html", LinovelibUrls.wenku("lastupdate", 1))
+        assertEquals("$host/novel/1804.html", LinovelibUrls.book("1804"))
+        assertEquals("$host/novel/1804/catalog", LinovelibUrls.catalog("1804"))
+        assertEquals("$host/novel/1804/65891.html", LinovelibUrls.chapter("1804", "65891"))
+        assertEquals("$host/novel/1804/65891.html", LinovelibUrls.fullChapter("1804", "65891"))
+        assertEquals("$host/files/article/image/1/1804/1804s.jpg", LinovelibUrls.cover("1804"))
     }
 }

@@ -55,4 +55,36 @@ class LinovelibSearchResponseTest {
         assertEquals("3768", (results[0] as SearchResult.SingleBook).bookId)
         assertTrue(results[1] is SearchResult.End)
     }
+
+    @Test
+    fun `empty result list is distinct from failed or unrecognized search responses`() = runBlocking {
+        for ((html, expectedEmpty) in listOf(
+            "<ol class=\"book-ol\"></ol>" to true,
+            "<html>Access denied</html>" to false,
+            "<ol class=\"book-ol\"><li class=\"book-li\">Invalid book</li></ol>" to false
+        )) {
+            val provider = LinovelibSearchProvider(
+                htmlLoader = { error("Empty search must not request details") },
+                searchHtmlLoader = { LinovelibSearchResponse("${LinovelibUrls.HOST}/search.html", html) },
+                parser = parser,
+                diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
+            )
+
+            val results = provider.search(provider.searchTypes.single(), "query").toList()
+
+            assertEquals(expectedEmpty, results.first() is SearchResult.Empty)
+            assertEquals(!expectedEmpty, results.first() is SearchResult.Error)
+            assertTrue(results.last() is SearchResult.End)
+        }
+
+        val provider = LinovelibSearchProvider(
+            htmlLoader = { "" },
+            searchHtmlLoader = { error("Search request failed") },
+            parser = parser,
+            diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
+        )
+        val results = provider.search(provider.searchTypes.single(), "query").toList()
+        assertTrue(results.first() is SearchResult.Error)
+        assertTrue(results.last() is SearchResult.End)
+    }
 }
