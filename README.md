@@ -13,7 +13,7 @@
 
 ## 下载
 
-当前已发布版本为 [2.1.0](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/tag/v2.1.0)，面向 LightNovelReader 1.2.2 / API 3。以下功能、兼容性及已知问题均以该发布版本为准；自行构建请使用 `v2.1.0` 标签，步骤见[构建](#构建)。
+当前已发布版本为 [2.1.1](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases/tag/v2.1.1)，面向 LightNovelReader 1.2.2 / API 3。以下功能、兼容性及已知问题均以该发布版本为准；自行构建请使用 `v2.1.1` 标签，步骤见[构建](#构建)。
 
 ## 功能
 
@@ -23,7 +23,7 @@
 - 支持完整章节加载
 - 支持章节插图，图片保持文内显示
 - 支持离线缓存和 EPUB 导出
-- 提供作品标签和作者的相关搜索入口；无已知书单链接时只检索书籍 ID，由本体加载详情。入口可用性受宿主限制，出版社当前仅显示，详见[已知问题](#已知问题)
+- 提供作品标签和作者的相关搜索入口；无已知书单链接时只检索书籍 ID，由本体加载详情。入口可用性受宿主限制，详见[已知问题](#已知问题)
 - 统一使用 `https://www.bilinovel.net` 简体入口；繁体显示使用本体的“简繁转换”设置
 
 ## 与上游插件的区别
@@ -34,7 +34,7 @@
 | applicationId | `io.nightfish.lightnovelreader.plugin.linovelib` | `io.nightfish.lightnovelreader.plugin.linovelib` |
 | 数据源 id | `linovelib_tw.hashCode()` | `linovelib.hashCode()`（`-1488977864`） |
 | 内容来源 | 简体正文转繁体输出 | 简体站原文 |
-| 版本名 | 1.1.2 | 2.1.0 |
+| 版本名 | 1.1.2 | 2.1.1 |
 
 本项目与上游插件使用相同 applicationId，不能同时安装。
 
@@ -44,16 +44,16 @@
 - Plugin API 3
 - Android 7（API 24）及以上
 
-`2.1.0` 保留本项目 `2.0.0` 的包名和数据源 ID，版本号递增，可由使用相同发行签名的新包覆盖升级。API 4 适配另行处理。
+`2.1.1` 保留本项目 `2.0.0` 的包名和数据源 ID，版本号递增，可由使用相同发行签名的新包覆盖升级。API 4 适配另行处理。
 
 所有支持的 Android 版本均按搜索词原文请求站点，不做繁简转换。站点返回的书籍内容保持原文。
 
 ## 已知问题
 
-已发布的 `2.1.0` 存在以下两项已知限制：
+当前版本存在以下两项已知限制：
 
 1. 主题筛选弹窗无法完整操作。API 3 宿主的单选弹窗不能滚动，61 个主题选项会挤占确认按钮空间，部分选项无法到达。LightNovelReader `1.2.2a` 模拟器已复现；当前不保证主题筛选可正常应用，地区等较短选项的筛选可用。后续需调整筛选交互或配套修复宿主弹窗，并重新验证。
-2. 出版社只显示，无法点击进入关联书单。`2.1.0` 使用的宿主出版社字段不支持点击；恢复出版社入口的修复尚未发布。正式宿主 `1.2.2a` 的标签接口兼容问题也仍需单独解决。
+2. 标签无法点击跳转。官方宿主 LightNovelReader `1.2.2a` 的标签回调接口存在兼容问题，点击标签无法进入关联页面。
 
 ## 安装
 
@@ -74,10 +74,10 @@
 - JDK 17
 - Android SDK 36
 
-当前 `main` 分支源码仍为 `2.0.0`。构建 `2.1.0` 请先获取对应发布标签的源码：
+当前 `main` 分支源码仍为 `2.0.0`。构建 `2.1.1` 请先获取对应发布标签的源码：
 
 ```bash
-git clone --branch v2.1.0 --depth 1 https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib.git
+git clone --branch v2.1.1 --depth 1 https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib.git
 cd LightNovelReaderPlugin-linovelib
 
 export SIGNING_KEYSTORE_PATH=/path/to/release.keystore
