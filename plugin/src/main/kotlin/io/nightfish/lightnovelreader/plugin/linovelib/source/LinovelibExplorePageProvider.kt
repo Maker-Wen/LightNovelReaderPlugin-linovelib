@@ -96,6 +96,8 @@ private class LinovelibRowsExploreTapPage(
     private val rowsLoader: suspend () -> List<ExploreBooksRow>
 ) : ExploreTapPageDataSource {
     override fun getRowsFlow(): Flow<List<ExploreBooksRow>> = flow {
+        // API 3 hosts retain the previous tab's rows until this flow emits.
+        emit(emptyList())
         emit(rowsLoader())
     }
 }

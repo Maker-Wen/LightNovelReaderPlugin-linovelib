@@ -62,7 +62,8 @@ class LinovelibWebDataSource(
     private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
     private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
-    private val offlineStateFlow = MutableStateFlow(true)
+    // Until a request confirms failure, let API 3 hosts show their loading state.
+    private val offlineStateFlow = MutableStateFlow(false)
     private val requestCoordinator = LinovelibRequestCoordinator()
     private val sessionCookies = mutableMapOf<String, String>()
     private var offlineMonitorJob: Job? = null
