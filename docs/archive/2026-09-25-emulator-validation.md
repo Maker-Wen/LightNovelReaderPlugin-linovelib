@@ -1,5 +1,7 @@
 # Linovelib 模拟器验证记录
 
+> 历史设备验收，仅覆盖下列宿主、插件包与场景。文中的“尚未落地”“未修复”等状态保留当时结论；三项架构改造的后续结果见 [2026-10-13 验证记录](2026-10-13-architecture-validation.md)。本机证据路径按原样留档，不保证长期存在。
+
 日期：2026-09-25。结论：基础抓取和阅读展示可用，存在两个已定位的问题和一个待定位的切章异常，不能判定完整验收通过。
 
 本轮测试现有实现；此前架构设计尚未落地。本轮没有修改生产代码。
@@ -59,7 +61,7 @@ progressBookTagClick(Ljava/lang/String;Landroidx/navigation/NavController;)V
 
 插件方法没有覆盖宿主接口方法。宿主默认实现只检查非空后返回，解释了无异常、无跳转、无插件日志的表现。BookRepository 和最后一层代理在实际 DEX 中仍转发该调用，可排除代理漏转发。
 
-证据：[宿主接口](/private/tmp/linovelib-emulator-20260925/host-WebBookDataSource.smali:369)、[插件实现](/private/tmp/linovelib-emulator-20260925/plugin-LinovelibWebDataSource.smali:8026)、[详情截图](/private/tmp/linovelib-emulator-20260925/26-related-a-open.jpg)。没有 release mapping，不单独声称还原了 `on2` 原始类名；方法签名不一致已直接证实。
+证据：宿主接口（`/private/tmp/linovelib-emulator-20260925/host-WebBookDataSource.smali:369`）、插件实现（`/private/tmp/linovelib-emulator-20260925/plugin-LinovelibWebDataSource.smali:8026`）、详情截图（`/private/tmp/linovelib-emulator-20260925/26-related-a-open.jpg`）。没有 release mapping，不单独声称还原了 `on2` 原始类名；方法签名不一致已直接证实。
 
 后续应先稳定宿主对插件暴露的 ABI，再用实际正式 APK 验证标签导航。仅调整插件分页实例所有权无法修复此入口问题。
 
@@ -69,17 +71,17 @@ progressBookTagClick(Ljava/lang/String;Landroidx/navigation/NavController;)V
 
 宿主 `FilterChipsDialog` 一次性展开全部选项，内容没有滚动；`BaseDialog` 先布局内容，再布局按钮。61 项主题中，现场 XML 只暴露 43 项，后 18 项不可达；可滚动节点为 0，按钮文字与语义尺寸被压没。仍有无标签点击区域，因此不表述为整个按钮节点都在屏幕外。
 
-官方 1.2.2a 与当前宿主工作区相关布局逻辑相同。源码位置：[Filter.kt](/Users/happyelements/Documents/LightNovelReader/app/src/main/kotlin/indi/dmzz_yyhyy/lightnovelreader/ui/components/Filter.kt:209)、[Dialog.kt](/Users/happyelements/Documents/LightNovelReader/app/src/main/kotlin/indi/dmzz_yyhyy/lightnovelreader/ui/components/Dialog.kt:90)。
+官方 1.2.2a 与当前宿主工作区相关布局逻辑相同。源码位置：Filter.kt（`/Users/happyelements/Documents/LightNovelReader/app/src/main/kotlin/indi/dmzz_yyhyy/lightnovelreader/ui/components/Filter.kt:209`）、Dialog.kt（`/Users/happyelements/Documents/LightNovelReader/app/src/main/kotlin/indi/dmzz_yyhyy/lightnovelreader/ui/components/Dialog.kt:90`）。
 
-证据：[弹窗截图](/private/tmp/linovelib-emulator-20260925/18-theme-selected.jpg)、[滑动后 XML](/private/tmp/linovelib-emulator-20260925/19-theme-bottom.xml)。修复应由宿主通用筛选弹窗提供可滚动内容区，并保证确认按钮始终可见。
+证据：弹窗截图（`/private/tmp/linovelib-emulator-20260925/18-theme-selected.jpg`）、滑动后 XML（`/private/tmp/linovelib-emulator-20260925/19-theme-bottom.xml`）。修复应由宿主通用筛选弹窗提供可滚动内容区，并保证确认按钮始终可见。
 
 ## 发现 3：连续滚动下切章未稳定生效
 
 严重度：P2，根因尚未确定。书籍 4833 的 #0（`linovelib-v3:292876`）正常加载，#1（292877）的网页抓取及 11 页正文解析已完成；点击下一章后仍显示 #0 尾部，进度达到 100%。返回目录直接选择 #1 后仍显示旧内容。`CHAPTER_DONE` 早于图片本地化和最终返回，不能单独证明宿主当时已收到完整预加载结果。
 
-[切章后](/private/tmp/linovelib-emulator-20260925/35-reader-settled.xml)、[滚动后](/private/tmp/linovelib-emulator-20260925/36-reader-after-next.xml)、[目录重选后](/private/tmp/linovelib-emulator-20260925/38-reader-direct-chapter.xml) 的正文节点相同，标题均为 #0；日志继续保存 292876 的阅读进度。
+切章后（`/private/tmp/linovelib-emulator-20260925/35-reader-settled.xml`）、滚动后（`/private/tmp/linovelib-emulator-20260925/36-reader-after-next.xml`）、目录重选后（`/private/tmp/linovelib-emulator-20260925/38-reader-direct-chapter.xml`） 的正文节点相同，标题均为 #0；日志继续保存 292876 的阅读进度。
 
-设备重启并切换软件渲染后，关闭 Continuous Scrolling，再点下一章，正确显示 #1，阅读记录也保存为 #1。证据：[关闭后的正确章节](/private/tmp/linovelib-emulator-20260925/59-next-continuous-off.jpg)、[首页记录](/private/tmp/linovelib-emulator-20260925/61-back-home.xml)。由于同时存在设备重启和渲染模式变化，不能据此独立证明开关就是根因。
+设备重启并切换软件渲染后，关闭 Continuous Scrolling，再点下一章，正确显示 #1，阅读记录也保存为 #1。证据：关闭后的正确章节（`/private/tmp/linovelib-emulator-20260925/59-next-continuous-off.jpg`）、首页记录（`/private/tmp/linovelib-emulator-20260925/61-back-home.xml`）。由于同时存在设备重启和渲染模式变化，不能据此独立证明开关就是根因。
 
 官方宿主连续滚动同时存在手动切章、按可见列表项自动切章、异步恢复滚动位置的路径，值得继续检查状态交错。日志中的 292878 请求符合下一章预加载；取消不会打印 HTTP 错误，不能把“只有 START”判定为网络死锁。当前未发现插件章节 ID 串写的源码依据。
 
@@ -96,11 +98,11 @@ progressBookTagClick(Ljava/lang/String;Landroidx/navigation/NavController;)V
 
 主要现场证据目录：`/private/tmp/linovelib-emulator-20260925/`。这是本机临时目录，长期保存需另行归档。
 
-- [第一阶段日志](/private/tmp/linovelib-emulator-20260925/linovelib-logcat.txt)
-- [重启后日志](/private/tmp/linovelib-emulator-20260925/linovelib-logcat-restart.txt)
-- [筛选结果](/private/tmp/linovelib-emulator-20260925/23-region-applied.jpg)
-- [正文与插图](/private/tmp/linovelib-emulator-20260925/30-reader-content.jpg)
-- [搜索最终结果](/private/tmp/linovelib-emulator-20260925/65-search-final.jpg)
+- 第一阶段日志（`/private/tmp/linovelib-emulator-20260925/linovelib-logcat.txt`）
+- 重启后日志（`/private/tmp/linovelib-emulator-20260925/linovelib-logcat-restart.txt`）
+- 筛选结果（`/private/tmp/linovelib-emulator-20260925/23-region-applied.jpg`）
+- 正文与插图（`/private/tmp/linovelib-emulator-20260925/30-reader-content.jpg`）
+- 搜索最终结果（`/private/tmp/linovelib-emulator-20260925/65-search-final.jpg`）
 
 第一阶段模拟器进程异常退出（退出码 134，日志含图形 color buffer 错误），改用软件渲染后完成补测。采集的 AndroidRuntime 日志没有应用崩溃；模拟器异常不计为应用崩溃。所有后续操作只针对独立的 5580 设备。
 
