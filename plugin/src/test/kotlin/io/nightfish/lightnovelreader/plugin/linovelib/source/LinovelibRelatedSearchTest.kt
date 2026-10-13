@@ -327,8 +327,9 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `explore provider uses linked page when parser knows tag url`() {
+    fun `explore provider uses linked page when metadata knows tag url`() {
         val parser = LinovelibHtmlParser()
+        val metadata = LinovelibMetadataStore()
         parser.parseBookInformation(
             "3247",
             """
@@ -337,8 +338,8 @@ class LinovelibRelatedSearchTest {
                   <em class="tag-small red"><a href="/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html">${"\u79d1\u5e7b"}</a></em>
                 </span>
             """.trimIndent()
-        )
-        val provider = LinovelibExplorePageProvider({ "" }, parser, { flowOf(SearchResult.End()) })
+        ).also(metadata::rememberBook)
+        val provider = LinovelibExplorePageProvider({ "" }, parser, { flowOf(SearchResult.End()) }, metadata = metadata)
 
         assertEquals(listOf("推荐", "文库", "排行", "完结"),
             provider.explorePageIdList.map { provider.exploreTapPageDataSourceMap.getValue(it).title })
@@ -353,7 +354,8 @@ class LinovelibRelatedSearchTest {
     @Test
     fun `known tag url replaces fallback page registered before book details load`() {
         val parser = LinovelibHtmlParser()
-        val provider = LinovelibExplorePageProvider({ "" }, parser, { flowOf(SearchResult.End()) })
+        val metadata = LinovelibMetadataStore()
+        val provider = LinovelibExplorePageProvider({ "" }, parser, { flowOf(SearchResult.End()) }, metadata = metadata)
         val pageId = provider.registerRelatedPage("\u79d1\u5e7b")
         assertTrue(provider.exploreExpandedPageDataSourceMap[pageId] is LinovelibRelatedExpandedPageDataSource)
 
@@ -365,7 +367,7 @@ class LinovelibRelatedSearchTest {
                   <em class="tag-small red"><a href="/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html">${"\u79d1\u5e7b"}</a></em>
                 </span>
             """.trimIndent()
-        )
+        ).also(metadata::rememberBook)
         provider.registerRelatedPage("\u79d1\u5e7b")
 
         assertTrue(provider.exploreExpandedPageDataSourceMap[pageId] is LinovelibLinkedExpandedPageDataSource)

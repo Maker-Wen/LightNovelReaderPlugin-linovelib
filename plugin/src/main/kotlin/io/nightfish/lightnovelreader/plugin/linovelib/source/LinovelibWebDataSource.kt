@@ -6,11 +6,8 @@ import androidx.navigation.NavController
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
-import io.nightfish.lightnovelreader.api.book.ChapterInformation
-import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.book.MutableChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
-import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
@@ -43,6 +40,7 @@ class LinovelibWebDataSource(
     private val context: Context
 ) : WebBookDataSource {
     private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
+    private val metadata = LinovelibMetadataStore()
     private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
     private val httpClient = LinovelibHttpClient(diagnostics = diagnostics)
@@ -60,14 +58,16 @@ class LinovelibWebDataSource(
         { keyword -> httpClient.search(keyword).let { LinovelibSearchResponse(it.finalUrl, it.html) } },
         parser,
         diagnostics,
-        LinovelibUrls.HOST
+        LinovelibUrls.HOST,
+        metadata
     )
     override val searchProvider: SearchProvider = linovelibSearchProvider
     private val linovelibExplorePageProvider = LinovelibExplorePageProvider(
         httpClient::loadHtml,
         parser,
         linovelibSearchProvider::searchBookIds,
-        LinovelibUrls.HOST
+        LinovelibUrls.HOST,
+        metadata
     )
     override val explorePageProvider: ExplorePageProvider = linovelibExplorePageProvider
     private val imageStore = LinovelibImageStore(
@@ -93,7 +93,8 @@ class LinovelibWebDataSource(
 
     override suspend fun getBookInformation(id: String): BookInformation = withContext(Dispatchers.IO) {
         runCatching {
-            parser.parseBookInformation(id, httpClient.loadHtml(LinovelibUrls.book(LinovelibUrls.HOST, id))).toBookInformation()
+            parser.parseBookInformation(id, httpClient.loadHtml(LinovelibUrls.book(LinovelibUrls.HOST, id)))
+                .also(metadata::rememberBook).toBookInformation()
                 .takeUnless(BookInformation::isEmpty)
                 ?: fallbackBookInformation(id)
         }.getOrElse { error ->
@@ -152,45 +153,8 @@ class LinovelibWebDataSource(
         diagnostics.info("RELATED_NAV_DONE", mapOf("mode" to "route", "pageId" to pageId))
     }
 
-    private fun ParsedBookInformation.toBookInformation(): BookInformation =
-        if (title.isEmpty()) BookInformation.empty(id) else toMutableBookInformation()
-
     private fun fallbackBookInformation(id: String): BookInformation =
-        parser.cachedBookInformation(id)?.toBookInformation()
-            ?: parser.cachedExploreBook(id)?.toBookInformation()
-            ?: BookInformation.empty(id)
-
-    private fun ParsedExploreBook.toBookInformation(): BookInformation =
-        MutableBookInformation(
-            id = id,
-            title = title,
-            subtitle = "",
-            coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
-            author = author,
-            description = "",
-            tags = emptyList(),
-            publishingHouse = "",
-            wordCount = WordCount(0),
-            lastUpdated = LinovelibDates.unknownDateTime(),
-            isComplete = false
-        )
-
-    private fun ParsedCatalog.toBookVolumes(): BookVolumes =
-        BookVolumes(
-            bookId = bookId,
-            volumes = volumes.mapIndexed { index, volume ->
-                Volume(
-                    volumeId = "$bookId-${index + 1}",
-                    volumeTitle = volume.title,
-                    chapters = volume.chapters.map {
-                        ChapterInformation(
-                            id = LinovelibChapterIds.forApp(it.id),
-                            title = it.title
-                        )
-                    }
-                )
-            }
-        )
+        metadata.fallbackBookInformation(id)?.toBookInformation() ?: BookInformation.empty(id)
 
     private suspend fun ParsedChapterContent.toChapterContent(): ChapterContent {
         val localizedBlocks = imageStore.localize(LinovelibContentFormatter.format(blocks))

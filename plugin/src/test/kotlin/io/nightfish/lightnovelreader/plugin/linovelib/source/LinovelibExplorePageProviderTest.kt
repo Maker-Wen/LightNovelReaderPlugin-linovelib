@@ -73,6 +73,7 @@ class LinovelibExplorePageProviderTest {
     @Test
     fun `learned related URLs keep the id and leave existing pages on their original target`() = runBlocking {
         val parser = LinovelibHtmlParser()
+        val metadata = LinovelibMetadataStore()
         val requested = mutableListOf<String>()
         val searched = mutableListOf<String>()
         val provider = LinovelibExplorePageProvider(
@@ -81,7 +82,8 @@ class LinovelibExplorePageProviderTest {
                 """<a class="book-layout" href="/novel/100.html"><span class="book-title">Book</span></a>"""
             },
             parser = parser,
-            searchBookIds = { keyword -> searched += keyword; flowOf(SearchResult.End()) }
+            searchBookIds = { keyword -> searched += keyword; flowOf(SearchResult.End()) },
+            metadata = metadata
         )
         val id = provider.registerRelatedPage("科幻")
         val fallbackMap = provider.exploreExpandedPageDataSourceMap
@@ -90,7 +92,7 @@ class LinovelibExplorePageProviderTest {
             parser.parseBookInformation("100", """
                 <h1 class="book-title">Book</h1>
                 <span class="tag-small-group"><em class="tag-small red"><a href="$path">科幻</a></em></span>
-            """)
+            """).also(metadata::rememberBook)
             assertEquals(id, provider.registerRelatedPage("科幻"))
         }
         learnTarget("/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html")
@@ -115,6 +117,7 @@ class LinovelibExplorePageProviderTest {
     @Test
     fun `author tag and publisher links all create independent pages`() = runBlocking {
         val parser = LinovelibHtmlParser()
+        val metadata = LinovelibMetadataStore()
         parser.parseBookInformation("100", """
             <h1 class="book-title">Book</h1>
             <span class="authorname"><a href="/author/123.html">Author</a></span>
@@ -122,11 +125,11 @@ class LinovelibExplorePageProviderTest {
               <em class="tag-small red"><a href="/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html">科幻</a></em>
               <em class="tag-small orange"><a href="/wenku/lastupdate_0_0_0_0_0_1_0_1_0.html">文库出版社</a></em>
             </span>
-        """)
+        """).also(metadata::rememberBook)
         val requested = mutableListOf<String>()
         val provider = LinovelibExplorePageProvider(
             { url -> requested += url; "<ol class=\"book-ol\"></ol>" }, parser,
-            { error("Known related links must not fall back to keyword search") }
+            { error("Known related links must not fall back to keyword search") }, metadata = metadata
         )
         val ids = listOf("作者：Author", "科幻", "文库出版社").map(provider::registerRelatedPage)
         val first = provider.exploreExpandedPageDataSourceMap

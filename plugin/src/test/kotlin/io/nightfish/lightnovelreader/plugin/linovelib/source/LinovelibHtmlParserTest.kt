@@ -2,13 +2,27 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
-import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalDate
 
 class LinovelibHtmlParserTest {
+    @Test
+    fun `detail results retain raw links and do not depend on previous parses`() {
+        val html = """
+            <h1 class="book-title">Book</h1>
+            <span class="authorname"><a href="/author/1.html">Author</a></span>
+            <span class="tag-small-group"><em class="tag-small red"><a href="/tag/1.html">Tag</a></em></span>
+        """
+        val first = parser.parseBookInformation("1", html)
+        parser.parseBookInformation("2", html.replace("/1.html", "/2.html"))
+        assertEquals(first, parser.parseBookInformation("1", html))
+        assertEquals(first, LinovelibHtmlParser().parseBookInformation("1", html))
+        assertEquals("Author", first.author)
+        assertEquals("${LinovelibUrls.HOST}/author/1.html", first.authorUrl)
+        assertEquals(mapOf("Tag" to "${LinovelibUrls.HOST}/tag/1.html"), first.relatedLinks)
+    }
+
     private val parser = LinovelibHtmlParser()
 
     @Test
@@ -108,28 +122,16 @@ class LinovelibHtmlParserTest {
         assertTrue(book.isComplete)
         assertEquals(
             "https://www.bilinovel.net/authorarticle/Ichiei-Ishibumi.html",
-            parser.relatedTarget("\u4f5c\u8005\uff1aIchiei Ishibumi")
+            book.authorUrl
         )
         assertEquals(
             "https://www.bilinovel.net/wenku/lastupdate_1_0_0_0_0_0_0_1_0.html",
-            parser.relatedTarget("School")
+            book.relatedLinks["School"]
         )
         assertEquals(
             "https://www.bilinovel.net/wenku/fujimi/1.html",
-            parser.relatedTarget("Fujimi Fantasia Bunko")
+            book.relatedLinks["Fujimi Fantasia Bunko"]
         )
-    }
-
-    @Test
-    fun invalidBookInformationDoesNotReplaceSuccessfulCache() {
-        val cached = parser.parseBookInformation("1", "<h1 class=\"book-title\">Book</h1>")
-
-        listOf("<html></html>", "<meta property=\"og:novel:book_name\" content=\"   \" />").forEach { html ->
-            assertTrue(parser.parseBookInformation("1", html).title.isBlank())
-            assertSame(cached, parser.cachedBookInformation("1"))
-            assertTrue(parser.parseBookInformation("2", html).title.isBlank())
-            assertNull(parser.cachedBookInformation("2"))
-        }
     }
 
     @Test

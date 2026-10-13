@@ -1,8 +1,6 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import android.net.Uri
 import io.nightfish.lightnovelreader.api.book.MutableBookInformation
-import io.nightfish.lightnovelreader.api.book.WordCount
 import io.nightfish.lightnovelreader.api.util.local
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
@@ -15,9 +13,10 @@ internal class LinovelibSearchProvider(
     private val searchHtmlLoader: suspend (String) -> LinovelibSearchResponse,
     private val parser: LinovelibHtmlParser,
     private val diagnostics: LinovelibDiagnostics,
-    private val host: String = LinovelibUrls.HOST
+    private val host: String = LinovelibUrls.HOST,
+    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ) : SearchProvider {
-    private val searchDetails = LinovelibSearchDetails(htmlLoader, parser, diagnostics, host)
+    private val searchDetails = LinovelibSearchDetails(htmlLoader, parser, diagnostics, host, metadata)
 
     override val searchTypes: List<SearchType> = listOf(
         SearchType(
@@ -43,7 +42,8 @@ internal class LinovelibSearchProvider(
         if (bookId != null) {
             if (loadDetails) {
                 runCatching {
-                    parser.parseBookInformation(bookId, htmlLoader(LinovelibUrls.book(host, bookId))).toMutableBookInformation()
+                    parser.parseBookInformation(bookId, htmlLoader(LinovelibUrls.book(host, bookId)))
+                        .also(metadata::rememberBook).takeIf { it.title.isNotBlank() }?.toMutableBookInformation()
                 }.onFailure {
                     it.rethrowIfCancellation()
                     diagnostics.error("SEARCH_DIRECT_ERROR", it, mapOf("bookId" to bookId))
@@ -82,7 +82,8 @@ internal class LinovelibSearchProvider(
         if (redirectedBookId != null) {
             if (loadDetails) {
                 val book = runCatching {
-                    parser.parseBookInformation(redirectedBookId, searchResponse.html).toMutableBookInformation()
+                    parser.parseBookInformation(redirectedBookId, searchResponse.html)
+                        .also(metadata::rememberBook).takeIf { it.title.isNotBlank() }?.toMutableBookInformation()
                 }.onFailure {
                     it.rethrowIfCancellation()
                     diagnostics.error("SEARCH_REDIRECT_ERROR", it, mapOf("bookId" to redirectedBookId))
@@ -104,6 +105,7 @@ internal class LinovelibSearchProvider(
         }
 
         val searchRow = parser.parseListRow("Search", searchResponse.html)
+        metadata.rememberBooks(searchRow.books)
 
         val books = searchRow.books.distinctBy { it.id }
         diagnostics.info(
@@ -141,18 +143,3 @@ internal class LinovelibSearchProvider(
         emit(SearchResult.End())
     }
 }
-
-internal fun ParsedBookInformation.toMutableBookInformation(): MutableBookInformation =
-    MutableBookInformation(
-        id = id,
-        title = title,
-        subtitle = subtitle,
-        coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
-        author = author,
-        description = description,
-        tags = LinovelibRelatedSearch.displayTags(author, tags),
-        publishingHouse = publishingHouse,
-        wordCount = WordCount(wordCount),
-        lastUpdated = lastUpdated.atStartOfDay(),
-        isComplete = isComplete
-    )

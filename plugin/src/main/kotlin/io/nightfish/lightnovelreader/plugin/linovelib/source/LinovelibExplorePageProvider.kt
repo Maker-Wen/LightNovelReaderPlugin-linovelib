@@ -10,11 +10,12 @@ import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
-class LinovelibExplorePageProvider(
+class LinovelibExplorePageProvider internal constructor(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     private val searchBookIds: (String) -> Flow<SearchResult>,
-    private val host: String = LinovelibUrls.HOST
+    private val host: String = LinovelibUrls.HOST,
+    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ) : AbstractDefaultExplorePageProvider() {
     private data class ExpandedPageDefinition(val title: String, val targetUrl: String?)
 
@@ -38,7 +39,9 @@ class LinovelibExplorePageProvider(
             parser.parseExploreRows(htmlLoader(host)).map(::expandableRow)
         })
         registerTapPage(LinovelibRowsExploreTapPage("文库") {
-            listOf(parser.parseListRow("全部轻小说", htmlLoader(wenkuUrl)).toExploreBooksRow(WENKU_PAGE_ID))
+            val row = parser.parseListRow("全部轻小说", htmlLoader(wenkuUrl))
+            metadata.rememberBooks(row.books)
+            listOf(row.toExploreBooksRow(WENKU_PAGE_ID))
         })
         registerTapPage(LinovelibRowsExploreTapPage("排行") {
             parser.parseRankingRows(htmlLoader(LinovelibUrls.top(host))).map(::expandableRow)
@@ -50,6 +53,7 @@ class LinovelibExplorePageProvider(
     }
 
     private fun expandableRow(row: ParsedExploreRow): ExploreBooksRow {
+        metadata.rememberBooks(row.books)
         val url = row.expandedUrl ?: return row.toExploreBooksRow()
         val pageId = "linovelib-list-${url.removePrefix(host)}"
         registerExpandedPageDefinition(pageId, ExpandedPageDefinition(row.title, url))
@@ -67,7 +71,7 @@ class LinovelibExplorePageProvider(
         val displayTag = tag.trim().ifEmpty { "Related" }
         val baseId = "$RELATED_PAGE_ID-${Integer.toHexString(displayTag.hashCode())}"
         synchronized(definitionLock) {
-            val targetUrl = parser.relatedTarget(displayTag)
+            val targetUrl = metadata.relatedTarget(displayTag)
             var pageId = baseId
             var suffix = 2
             while (true) {
@@ -97,7 +101,8 @@ class LinovelibExplorePageProvider(
             htmlLoader = htmlLoader,
             parser = parser,
             filters = wenkuFilters?.filters.orEmpty(),
-            filteredUrl = wenkuFilters?.let { filters -> { filters.url() } }
+            filteredUrl = wenkuFilters?.let { filters -> { filters.url() } },
+            metadata = metadata
         )
     }
 

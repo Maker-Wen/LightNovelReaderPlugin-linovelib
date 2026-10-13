@@ -7,15 +7,17 @@ internal class LinovelibSearchDetails(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     private val diagnostics: LinovelibDiagnostics,
-    private val host: String = LinovelibUrls.HOST
+    private val host: String = LinovelibUrls.HOST,
+    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ) {
     fun load(books: List<ParsedExploreBook>): Flow<ParsedBookInformation> = flow {
         books.forEach { book ->
-            emit(parser.cachedBookInformation(book.id)?.takeIf { it.title.isNotBlank() } ?: book.summary())
+            emit(metadata.bookInformation(book.id) ?: book.toParsedBookInformation())
         }
         books.forEach { book ->
             val information = runCatching {
                 parser.parseBookInformation(book.id, htmlLoader(LinovelibUrls.book(host, book.id)))
+                    .also(metadata::rememberBook)
                     .takeIf { it.title.isNotBlank() }
             }.onFailure {
                 it.rethrowIfCancellation()
@@ -25,17 +27,4 @@ internal class LinovelibSearchDetails(
         }
     }
 
-    private fun ParsedExploreBook.summary() = ParsedBookInformation(
-        id = id,
-        title = title,
-        subtitle = "",
-        coverUrl = coverUrl,
-        author = author,
-        description = "",
-        tags = emptyList(),
-        publishingHouse = "",
-        wordCount = 0,
-        lastUpdated = LinovelibDates.unknownLocalDate,
-        isComplete = false
-    )
 }

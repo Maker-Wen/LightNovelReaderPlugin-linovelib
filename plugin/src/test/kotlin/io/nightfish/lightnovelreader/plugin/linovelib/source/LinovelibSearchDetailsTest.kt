@@ -6,12 +6,57 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 import java.io.File
 import java.time.LocalDate
 import java.util.concurrent.atomic.AtomicInteger
 
 class LinovelibSearchDetailsTest {
+    @Test
+    fun `cached details display immediately but still refresh and register new targets`() = runBlocking {
+        val metadata = LinovelibMetadataStore()
+        val parser = LinovelibHtmlParser()
+        metadata.rememberBook(parser.parseBookInformation("1", bookHtml("old", "2026-01-01")))
+        val requested = mutableListOf<String>()
+        val details = LinovelibSearchDetails(
+            htmlLoader = { url ->
+                requested += url
+                bookHtml("new", "2026-10-13").replace("<a>Author new", "<a href=\"/author/new.html\">Author new")
+            }, parser = parser, diagnostics = silentDiagnostics(), metadata = metadata
+        )
+        val results = mutableListOf<ParsedBookInformation>()
+        details.load(listOf(ParsedExploreBook("1", "List title", "", ""))).collect {
+            if (results.isEmpty()) assertTrue(requested.isEmpty())
+            results += it
+        }
+        assertEquals(listOf("Book old", "Book new"), results.map { it.title })
+        assertEquals(listOf(LinovelibUrls.book("1")), requested)
+        assertEquals("Book new", metadata.bookInformation("1")?.title)
+        assertEquals("${LinovelibUrls.HOST}/author/new.html", metadata.relatedTarget("作者：Author new"))
+    }
+
+    @Test
+    fun `invalid or cancelled detail refresh keeps previous successful data`() = runBlocking {
+        val metadata = LinovelibMetadataStore()
+        val parser = LinovelibHtmlParser()
+        val known = parser.parseBookInformation("1", bookHtml("known", "2026-01-01"))
+        metadata.rememberBook(known)
+        val books = listOf(ParsedExploreBook("1", "List title", "", ""))
+        val invalid = LinovelibSearchDetails({ "<html>Verification required</html>" }, parser, silentDiagnostics(), metadata = metadata)
+        assertEquals(listOf(known), invalid.load(books).toList())
+        val cancelled = LinovelibSearchDetails({ throw kotlinx.coroutines.CancellationException("Cancelled") }, parser, silentDiagnostics(), metadata = metadata)
+        val emitted = mutableListOf<ParsedBookInformation>()
+        try {
+            cancelled.load(books).collect { emitted += it }
+            error("Cancellation must propagate")
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            assertEquals(listOf(known), emitted)
+            assertEquals(known, metadata.bookInformation("1"))
+            assertNull(metadata.bookInformation("2"))
+        }
+    }
+
     @Test
     fun `does not link coroutine synchronization classes unavailable in the host app`() {
         val sourcePath = "io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchDetails.kt"

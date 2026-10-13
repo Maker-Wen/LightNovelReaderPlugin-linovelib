@@ -28,7 +28,8 @@ internal class LinovelibLinkedExpandedPageDataSource(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     override val filters: List<Filter<*>> = emptyList(),
-    private val filteredUrl: (() -> String)? = null
+    private val filteredUrl: (() -> String)? = null,
+    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
     private val sessionLock = Any()
@@ -67,6 +68,8 @@ internal class LinovelibLinkedExpandedPageDataSource(
                     lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else parser.parseLastPage(html)
                 }
                 val parsedBooks = parser.parseListRow(displayTag, html).books
+                context.ensureActive()
+                metadata.rememberBooks(parsedBooks)
                 if (parsedBooks.isEmpty() && !LinovelibSearchResponse(firstPageUrl, html).hasEmptyResultList()) {
                     emit(SearchResult.Error("未能识别书单页面，请稍后重试"))
                     emit(SearchResult.End())

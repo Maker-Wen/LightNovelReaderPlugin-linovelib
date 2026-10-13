@@ -92,6 +92,12 @@ tasks.withType<KotlinJvmCompile>().configureEach {
     }
 }
 
+// Host tests need Android Uri and the API 3 host's actual classes, not android.jar stubs.
+// They are compiled here and run on a device by scripts/run-host-tests.py.
+tasks.withType<Test>().configureEach {
+    exclude("**/*HostTest*.class")
+}
+
 fun registerHostAbiCheck(variant: String) = tasks.register(
     "verify${variant.replaceFirstChar(Char::uppercase)}HostAbi"
 ) {
