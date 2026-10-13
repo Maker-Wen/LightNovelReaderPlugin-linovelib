@@ -33,7 +33,8 @@ class LinovelibRelatedSearchTest {
             parser = parser, diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
         )
         val explore = LinovelibExplorePageProvider({ error("No known list link") }, parser, search::searchBookIds)
-        val page = explore.exploreExpandedPageDataSourceMap.getValue(explore.registerRelatedPage("作者：Author"))
+        val pageId = explore.registerRelatedPage("作者：Author")
+        val page = explore.exploreExpandedPageDataSourceMap.getValue(pageId)
 
         val results = page.getResultFlow().toList()
 

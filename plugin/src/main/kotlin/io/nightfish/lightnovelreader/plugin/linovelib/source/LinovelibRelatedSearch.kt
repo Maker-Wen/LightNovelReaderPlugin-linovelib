@@ -4,6 +4,8 @@ import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSour
 import io.nightfish.lightnovelreader.api.web.explore.filter.Filter
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -29,23 +31,30 @@ internal class LinovelibLinkedExpandedPageDataSource(
     private val filteredUrl: (() -> String)? = null
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
-    @Volatile
+    private val sessionLock = Any()
     private var loadMoreRequests: Channel<Unit>? = null
 
     override fun loadMore() {
-        loadMoreRequests?.trySend(Unit)
+        val requests = synchronized(sessionLock) { loadMoreRequests }
+        requests?.trySend(Unit)
     }
 
     override fun getResultFlow(): Flow<SearchResult> = flow {
         val requests = Channel<Unit>(Channel.CONFLATED)
-        loadMoreRequests = requests
-        // The host cancels and recollects on filter changes. Keep each collection's pages consistent.
-        val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
-        val emittedBookIds = mutableSetOf<String>()
-        var currentPage = 1
-        var lastPage = 1
         try {
+            // The host cancels and recollects on filter changes. Snapshot before publishing
+            // so a cancelled collection cannot replace a newer collection's request channel.
+            val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
+            val context = currentCoroutineContext()
+            synchronized(sessionLock) {
+                context.ensureActive()
+                loadMoreRequests = requests
+            }
+            val emittedBookIds = mutableSetOf<String>()
+            var currentPage = 1
+            var lastPage = 1
             do {
+                context.ensureActive()
                 val html = runCatching {
                     htmlLoader(LinovelibUrls.listPage(firstPageUrl, currentPage)
                         ?: error("Unsupported Linovelib pagination URL: $firstPageUrl"))
@@ -73,7 +82,9 @@ internal class LinovelibLinkedExpandedPageDataSource(
             if (emittedBookIds.isEmpty()) emit(SearchResult.Empty())
             emit(SearchResult.End())
         } finally {
-            if (loadMoreRequests === requests) loadMoreRequests = null
+            synchronized(sessionLock) {
+                if (loadMoreRequests === requests) loadMoreRequests = null
+            }
             requests.close()
         }
     }

@@ -4,6 +4,7 @@ import android.net.Uri
 import io.nightfish.lightnovelreader.api.explore.ExploreBooksRow
 import io.nightfish.lightnovelreader.api.explore.ExploreDisplayBook
 import io.nightfish.lightnovelreader.api.web.explore.AbstractDefaultExplorePageProvider
+import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExploreTapPageDataSource
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.Flow
@@ -15,16 +16,24 @@ class LinovelibExplorePageProvider(
     private val searchBookIds: (String) -> Flow<SearchResult>,
     private val host: String = LinovelibUrls.HOST
 ) : AbstractDefaultExplorePageProvider() {
+    private data class ExpandedPageDefinition(val title: String, val targetUrl: String?)
+
+    private val definitionLock = Any()
+    private val expandedPageDefinitions = linkedMapOf<String, ExpandedPageDefinition>()
+
+    override val exploreExpandedPageDataSourceMap: MutableMap<String, ExploreExpandedPageDataSource>
+        get() {
+            val definitions = synchronized(definitionLock) { expandedPageDefinitions.toMap() }
+            // ponytail: API 3 exposes a Map, so each read creates O(definitions) lightweight pages.
+            // The host keeps one page per ViewModel; construction must never start I/O.
+            return definitions.mapValuesTo(linkedMapOf()) { (id, definition) ->
+                createExpandedPage(id, definition)
+            }
+        }
+
     init {
-        val wenkuFilters = LinovelibWenkuFilters(host)
         val wenkuUrl = LinovelibUrls.wenku(host, "lastupdate", 1)
-        registerExpandedPageDataSource(
-            WENKU_PAGE_ID,
-            LinovelibLinkedExpandedPageDataSource(
-                displayTag = "文库", targetUrl = wenkuUrl, htmlLoader = htmlLoader, parser = parser,
-                filters = wenkuFilters.filters, filteredUrl = { wenkuFilters.url() }
-            )
-        )
+        registerExpandedPageDefinition(WENKU_PAGE_ID, ExpandedPageDefinition("文库", wenkuUrl))
         registerTapPage(LinovelibRowsExploreTapPage("推荐") {
             parser.parseExploreRows(htmlLoader(host)).map(::expandableRow)
         })
@@ -43,47 +52,54 @@ class LinovelibExplorePageProvider(
     private fun expandableRow(row: ParsedExploreRow): ExploreBooksRow {
         val url = row.expandedUrl ?: return row.toExploreBooksRow()
         val pageId = "linovelib-list-${url.removePrefix(host)}"
-        if (pageId !in exploreExpandedPageDataSourceMap) {
-            registerExpandedPageDataSource(
-                pageId, LinovelibLinkedExpandedPageDataSource(row.title, url, htmlLoader, parser)
-            )
-        }
+        registerExpandedPageDefinition(pageId, ExpandedPageDefinition(row.title, url))
         return row.toExploreBooksRow(pageId)
+    }
+
+    private fun registerExpandedPageDefinition(id: String, definition: ExpandedPageDefinition) {
+        // Do not use the inherited registration method: it would write into a disposable snapshot.
+        synchronized(definitionLock) {
+            if (id !in expandedPageDefinitions) expandedPageDefinitions[id] = definition
+        }
     }
 
     fun registerRelatedPage(tag: String): String {
         val displayTag = tag.trim().ifEmpty { "Related" }
         val baseId = "$RELATED_PAGE_ID-${Integer.toHexString(displayTag.hashCode())}"
-        val targetUrl = parser.relatedTarget(displayTag)
-        var pageId = baseId
-        var suffix = 2
-        while (true) {
-            val existing = exploreExpandedPageDataSourceMap[pageId]
-            if (existing == null) {
-                registerExpandedPageDataSource(pageId, relatedPage(displayTag, targetUrl))
-                return pageId
-            }
-            if (existing.title == displayTag) {
-                if (targetUrl != null && existing !is LinovelibLinkedExpandedPageDataSource) {
-                    registerExpandedPageDataSource(pageId, relatedPage(displayTag, targetUrl))
+        synchronized(definitionLock) {
+            val targetUrl = parser.relatedTarget(displayTag)
+            var pageId = baseId
+            var suffix = 2
+            while (true) {
+                val existing = expandedPageDefinitions[pageId]
+                if (existing == null) {
+                    expandedPageDefinitions[pageId] = ExpandedPageDefinition(displayTag, targetUrl)
+                    return pageId
                 }
-                return pageId
+                if (existing.title == displayTag) {
+                    if (targetUrl != null && targetUrl != existing.targetUrl) {
+                        expandedPageDefinitions[pageId] = existing.copy(targetUrl = targetUrl)
+                    }
+                    return pageId
+                }
+                pageId = "$baseId-${suffix++}"
             }
-            pageId = "$baseId-${suffix++}"
         }
     }
 
-    private fun relatedPage(displayTag: String, targetUrl: String?) =
-        if (targetUrl == null) {
-            LinovelibRelatedExpandedPageDataSource(searchBookIds, displayTag)
-        } else {
-            LinovelibLinkedExpandedPageDataSource(
-                displayTag = displayTag,
-                targetUrl = targetUrl,
-                htmlLoader = htmlLoader,
-                parser = parser
-            )
-        }
+    private fun createExpandedPage(id: String, definition: ExpandedPageDefinition): ExploreExpandedPageDataSource {
+        val targetUrl = definition.targetUrl
+            ?: return LinovelibRelatedExpandedPageDataSource(searchBookIds, definition.title)
+        val wenkuFilters = if (id == WENKU_PAGE_ID) LinovelibWenkuFilters(host) else null
+        return LinovelibLinkedExpandedPageDataSource(
+            displayTag = definition.title,
+            targetUrl = targetUrl,
+            htmlLoader = htmlLoader,
+            parser = parser,
+            filters = wenkuFilters?.filters.orEmpty(),
+            filteredUrl = wenkuFilters?.let { filters -> { filters.url() } }
+        )
+    }
 
     companion object {
         const val RELATED_PAGE_ID = "linovelib-related"
