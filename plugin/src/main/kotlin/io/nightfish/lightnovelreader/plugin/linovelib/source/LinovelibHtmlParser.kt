@@ -202,7 +202,6 @@ class LinovelibHtmlParser(
                     .select("a.module-slide-a[href], a.book-layout[href]")
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
-                    .take(MAX_BOOKS_PER_ROW)
                 if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
                     title,
                     books,
@@ -210,7 +209,6 @@ class LinovelibHtmlParser(
                 )
             }
             .filter { it.books.isNotEmpty() }
-            .take(MAX_EXPLORE_ROWS)
 
         if (rows.isNotEmpty()) return rows
 
@@ -218,7 +216,6 @@ class LinovelibHtmlParser(
             .select("a[href*=/novel/][href$=.html]")
             .mapNotNull(::parseExploreBook)
             .distinctBy { it.id }
-            .take(MAX_BOOKS_PER_ROW)
         return if (fallbackBooks.isEmpty()) {
             emptyList()
         } else {
@@ -234,14 +231,12 @@ class LinovelibHtmlParser(
                 val books = category.select(".fl-content a[href*=/novel/]")
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
-                    .take(MAX_BOOKS_PER_ROW)
                 if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
                     title,
                     books,
                     expandedListUrl(category, "a.fl-header[href], a.fl-content-li-more[href]")
                 )
             }
-            .take(MAX_EXPLORE_ROWS)
     }
 
     fun parseListRow(title: String, html: String): ParsedExploreRow {
@@ -479,8 +474,6 @@ class LinovelibHtmlParser(
             .trim()
 
     private companion object {
-        const val MAX_EXPLORE_ROWS = 8
-        const val MAX_BOOKS_PER_ROW = 12
         val STATUS_COMPLETE = Regex("完[结結]")
         const val CONTENT_LOAD_FAILED = "\u5167\u5bb9\u52a0\u8f09\u5931\u6557"
         const val SIMPLIFIED_CONTENT_LOAD_FAILED = "\u5185\u5bb9\u52a0\u8f7d\u5931\u8d25"

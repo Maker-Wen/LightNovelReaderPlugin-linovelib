@@ -62,6 +62,57 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
+    fun exploreAndRankingParseAllValidRowsAndBooksInOriginalOrder() {
+        val invalidBooks = """<a class="book-layout" href="/novel/999.html"> </a><a class="book-layout" href="/invalid.html">Invalid</a>"""
+        fun books(index: Int) = (1..40).joinToString("") { offset -> exploreBook(index * 100 + offset) } +
+            exploreBook(index * 100 + 1, "Duplicate title") + invalidBooks
+        fun module(title: String, books: String, index: Int = 0) = """
+            <section class="module"><header class="module-header"><h2 class="module-title">$title</h2>
+            <a class="module-header-btn" href="/wenku/row$index.html">More</a></header>$books</section>
+        """
+        fun ranking(title: String, books: String, index: Int = 0) = """
+            <div class="category-list"><a class="fl-header" href="/top/row$index/1.html"><span class="fl-header-l">$title</span></a>
+            <div class="fl-content">$books</div></div>
+        """
+        val exploreRows = parser.parseExploreRows(
+            module(" ", exploreBook(1)) + module("Empty", invalidBooks) +
+                (1..9).joinToString("") { module("Row $it", books(it), it) }
+        )
+        val rankingRows = parser.parseRankingRows(
+            ranking(" ", exploreBook(1)) + ranking("Empty", invalidBooks) +
+                (1..9).joinToString("") { ranking("Row $it", books(it), it) }
+        )
+
+        listOf(exploreRows, rankingRows).forEach { rows ->
+            assertEquals((1..9).map { "Row $it" }, rows.map { it.title })
+            rows.forEachIndexed { index, row ->
+                val ids = (1..40).map { "${(index + 1) * 100 + it}" }
+                assertEquals(ids, row.books.map { it.id })
+                assertEquals(ids.map { "Book $it" }, row.books.map { it.title })
+            }
+        }
+        assertEquals((1..9).map { "${LinovelibUrls.HOST}/wenku/row$it.html" }, exploreRows.map { it.expandedUrl })
+        assertEquals((1..9).map { "${LinovelibUrls.HOST}/top/row$it/1.html" }, rankingRows.map { it.expandedUrl })
+    }
+
+    @Test
+    fun exploreFallbackParsesAllValidBooksWithoutDisplayLimits() {
+        val html = """<section class="module"><h2 class="module-title">Empty</h2></section>""" +
+            (1..40).joinToString("") { exploreBook(it) } + exploreBook(1, "Duplicate title") +
+            """<a href="/novel/999.html"> </a><a href="/invalid.html">Invalid</a>"""
+
+        val row = parser.parseExploreRows(html).single()
+
+        assertEquals("Home", row.title)
+        assertEquals((1..40).map(Int::toString), row.books.map { it.id })
+        assertEquals((1..40).map { "Book $it" }, row.books.map { it.title })
+        assertEquals(null, row.expandedUrl)
+    }
+
+    private fun exploreBook(id: Int, title: String = "Book $id") =
+        """<a class="book-layout" href="/novel/$id.html"><span class="book-title">$title</span></a>"""
+
+    @Test
     fun parseBookInformationRecognizesSimplifiedAndTraditionalCompletionStatus() {
         for ((status, complete) in listOf(
             "完结" to true, "完結" to true,

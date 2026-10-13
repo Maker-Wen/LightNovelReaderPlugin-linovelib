@@ -11,28 +11,94 @@ import java.time.LocalDateTime
 
 class LinovelibMetadataFlowHostTest {
     @Test
-    fun allExploreTabsRecordReturnedSummariesIncludingBooksPastTheDisplayLimit() = runBlocking {
-        val links = (1..13).joinToString("") { row(it) }
-        val html = """
-            <div class="module"><h2 class="module-title">Recommended</h2>$links</div>
-            <div class="category-list"><span class="fl-header-l">Ranking</span><div class="fl-content">$links</div></div>
-            <ol class="book-ol">$links</ol>
-        """
+    fun allExploreTabsRecordOnlyDisplayedSummariesWithoutHiddenBooksEvictingThem() = runBlocking {
+        val links = (1..300).joinToString("") { row(it) }
         listOf("推荐", "文库", "排行", "完结").forEach { title ->
             val metadata = LinovelibMetadataStore()
-            val provider = LinovelibExplorePageProvider({ html }, LinovelibHtmlParser(), { flowOf(SearchResult.End()) }, metadata = metadata)
-            val tab = provider.exploreTapPageDataSourceMap.values.single { it.title == title }
-            val emissions = tab.getRowsFlow().toList()
+            val provider = exploreProvider(exploreHtml(title, links), metadata)
+            val emissions = provider.exploreTapPageDataSourceMap.values.single { it.title == title }
+                .getRowsFlow().toList()
             assertTrue(emissions.first().isEmpty())
-            assertTrue(emissions.last().isNotEmpty())
-            val fallback = metadata.fallbackBookInformation("1")!!.toBookInformation()
-            assertEquals("Book 1", fallback.title)
-            assertEquals(listOf("作者：Writer"), fallback.tags)
-            assertEquals(LocalDateTime.MIN, fallback.lastUpdated)
-            if (title == "文库" || title == "完结") {
-                assertEquals("Book 13", metadata.fallbackBookInformation("13")?.title)
-                assertEquals(12, emissions.last().single().bookList.size)
+            assertEquals((1..12).map(Int::toString), emissions.last().single().bookList.map { it.id })
+            (1..12).forEach { id ->
+                val fallback = metadata.fallbackBookInformation("$id")!!.toBookInformation()
+                assertEquals("Book $id", fallback.title)
+                assertEquals(listOf("作者：Writer"), fallback.tags)
+                assertEquals(LinovelibUrls.cover(LinovelibUrls.HOST, "$id"), fallback.coverUri.toString())
+                assertEquals(LocalDateTime.MIN, fallback.lastUpdated)
             }
+            (13..300).forEach { id ->
+                assertNull("$title must not record hidden book $id", metadata.fallbackBookInformation("$id"))
+            }
+        }
+    }
+
+    @Test
+    fun recommendationFallbackRecordsOnlyItsDisplayedSummaries() = runBlocking {
+        val metadata = LinovelibMetadataStore()
+        val provider = exploreProvider((1..13).joinToString("") { row(it) }, metadata)
+        val rows = provider.exploreTapPageDataSourceMap.values.single { it.title == "推荐" }
+            .getRowsFlow().toList().last()
+
+        assertEquals("Home", rows.single().title)
+        assertEquals((1..12).map(Int::toString), rows.single().bookList.map { it.id })
+        assertEquals("Book 12", metadata.fallbackBookInformation("12")?.title)
+        assertNull(metadata.fallbackBookInformation("13"))
+        assertEquals(setOf(LinovelibExplorePageProvider.WENKU_PAGE_ID), provider.exploreExpandedPageDataSourceMap.keys)
+    }
+
+    @Test
+    fun recommendationAndRankingLimitValidRowsBeforeRecordingSummariesAndRegisteringPages() = runBlocking {
+        listOf("推荐", "排行").forEach { title ->
+            val metadata = LinovelibMetadataStore()
+            // Missing titles and rows with no valid books must not consume a display slot.
+            val invalidRows = exploreHtml(title, row(999), " ") + exploreHtml(title, "", "Empty")
+            val html = invalidRows + (1..9).joinToString("") { index ->
+                exploreHtml(
+                    title,
+                    (1..13).joinToString("") { offset -> row(index * 100 + offset) },
+                    "Row $index",
+                    "/top/row$index/1.html"
+                )
+            }
+            val provider = exploreProvider(html, metadata)
+            val rows = provider.exploreTapPageDataSourceMap.values.single { it.title == title }
+                .getRowsFlow().toList().last()
+
+            assertEquals((1..8).map { "Row $it" }, rows.map { it.title })
+            rows.forEachIndexed { index, displayed ->
+                val ids = (1..12).map { "${(index + 1) * 100 + it}" }
+                val pageId = "linovelib-list-/top/row${index + 1}/1.html"
+                assertEquals(ids, displayed.bookList.map { it.id })
+                assertTrue(displayed.expandable)
+                assertEquals(pageId, displayed.expandedPageDataSourceId)
+                ids.forEach { id -> assertEquals("Book $id", metadata.fallbackBookInformation(id)?.title) }
+                assertNull(metadata.fallbackBookInformation("${(index + 1) * 100 + 13}"))
+            }
+            assertNull(metadata.fallbackBookInformation("999"))
+            assertNull(metadata.fallbackBookInformation("901"))
+            val visiblePageIds = (1..8).map { "linovelib-list-/top/row$it/1.html" }.toSet()
+            assertEquals(
+                visiblePageIds + LinovelibExplorePageProvider.WENKU_PAGE_ID,
+                provider.exploreExpandedPageDataSourceMap.keys
+            )
+        }
+    }
+
+    @Test
+    fun hiddenBooksNeitherReplaceExistingSummariesNorRefreshTheirRetention() = runBlocking {
+        listOf("推荐", "文库", "排行", "完结").forEach { title ->
+            val metadata = LinovelibMetadataStore()
+            metadata.rememberBooks(listOf(ParsedExploreBook("13", "Original summary", "Original author", "")))
+            metadata.rememberBooks((1_000..1_242).map { ParsedExploreBook("$it", "Existing $it", "", "") })
+            val provider = exploreProvider(exploreHtml(title, (1..13).joinToString("") { row(it) }), metadata)
+            provider.exploreTapPageDataSourceMap.values.single { it.title == title }.getRowsFlow().toList()
+
+            assertEquals("Original summary", metadata.fallbackBookInformation("13")?.title)
+            // The 12 visible books fill the 256-entry index. The hidden book remains its oldest write.
+            metadata.rememberBooks(listOf(ParsedExploreBook("2000", "Next summary", "", "")))
+            assertNull("$title must not refresh the hidden summary", metadata.fallbackBookInformation("13"))
+            assertNotNull(metadata.fallbackBookInformation("1000"))
         }
     }
 
@@ -97,6 +163,24 @@ class LinovelibMetadataFlowHostTest {
         )
         assertTrue(redirect.searchBookIds("query").toList().first() is SearchResult.SingleBook)
         assertNull(metadata.bookInformation("3"))
+    }
+
+    private fun exploreProvider(html: String, metadata: LinovelibMetadataStore) =
+        LinovelibExplorePageProvider({ html }, LinovelibHtmlParser(), { flowOf(SearchResult.End()) }, metadata = metadata)
+
+    private fun exploreHtml(tab: String, books: String, title: String = "Books", expandedUrl: String? = null): String {
+        val moreLink = expandedUrl?.let { "<a class=\"module-header-btn\" href=\"$it\">More</a>" }.orEmpty()
+        return when (tab) {
+            "推荐" -> """
+                <section class="module"><header class="module-header">
+                <h2 class="module-title">$title</h2>$moreLink</header>$books</section>
+            """
+            "排行" -> """
+                <div class="category-list"><a class="fl-header" href="${expandedUrl.orEmpty()}">
+                <span class="fl-header-l">$title</span></a><div class="fl-content">$books</div></div>
+            """
+            else -> """<ol class="book-ol">$books</ol>"""
+        }
     }
 
     private fun searchProvider(metadata: LinovelibMetadataStore, rows: String, load: suspend (String) -> String) =
