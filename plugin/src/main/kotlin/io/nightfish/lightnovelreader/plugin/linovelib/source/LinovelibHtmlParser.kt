@@ -114,7 +114,7 @@ class LinovelibHtmlParser(
             title = document.selectFirst(".book-detail-info .book-title, .book-title")?.text().orEmpty()
                 .ifBlank { meta("og:novel:book_name") },
             subtitle = document.selectFirst(".backupname span")?.text().orEmpty(),
-            coverUrl = LinovelibUrls.currentCoverUrl(normalizeUrl(meta("og:image"))),
+            coverUrl = normalizeUrl(meta("og:image")),
             author = author,
             description = document.selectFirst("#bookSummary content")
                 ?.let(::htmlWithBreaksToText)
@@ -334,7 +334,7 @@ class LinovelibHtmlParser(
             .orEmpty()
             .ifBlank { LinovelibUrls.cover(host, id) }
 
-        return ParsedExploreBook(id, title, author, LinovelibUrls.currentCoverUrl(coverUrl)).also { exploreBookCache[id] = it }
+        return ParsedExploreBook(id, title, author, coverUrl).also { exploreBookCache[id] = it }
     }
 
     private fun parseContentBlocks(element: Element): List<ParsedContentBlock> {

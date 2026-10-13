@@ -7,20 +7,16 @@ import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
-import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
 import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.book.MutableChapterContent
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
-import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
 import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
-import io.nightfish.lightnovelreader.api.text.TextProcessingRepositoryApi
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
-import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
 import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
@@ -50,15 +46,8 @@ internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
     provider = "linovelib.com"
 )
 class LinovelibWebDataSource(
-    private val context: Context,
-    localBookDataSource: LocalBookDataSourceApi,
-    textProcessingRepository: TextProcessingRepositoryApi,
-    bookshelfRepository: BookshelfRepositoryApi,
-    webDataSourceManager: WebBookDataSourceManagerApi
+    private val context: Context
 ) : WebBookDataSource {
-    private val coverData = LinovelibCoverData(localBookDataSource, textProcessingRepository, bookshelfRepository) {
-        webDataSourceManager.getWebDataSource() === this
-    }
     private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
     private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
@@ -103,7 +92,6 @@ class LinovelibWebDataSource(
 
     @Synchronized
     override fun onLoad() {
-        coverData.onLoad()
         if (!LinovelibDataSourceConfiguration.shouldStartOfflineMonitor(offlineMonitorJob?.isActive == true)) return
         offlineMonitorJob = scope.launch {
             offlineStateFlow.value = isOffLine()

@@ -98,7 +98,7 @@ class LinovelibHtmlParserTest {
         assertEquals("1", book.id)
         assertEquals("High School DxD", book.title)
         assertEquals("DxD", book.subtitle)
-        assertEquals("https://www.bilinovel.net/files/article/image/0/1/1s.jpg", book.coverUrl)
+        assertEquals("https://tw.linovelib.com/files/article/image/0/1/1s.jpg", book.coverUrl)
         assertEquals("Ichiei Ishibumi", book.author)
         assertEquals("Line one\nLine two", book.description)
         assertEquals(listOf("School", "Fantasy"), book.tags)
