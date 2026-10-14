@@ -8,6 +8,25 @@ import org.junit.Test
 import kotlinx.serialization.json.JsonPrimitive
 
 class Api3HostAdapterTest {
+    @Test fun missingOrUnreadableReceiptCannotAuthorizeRetryAfterUnknownTransactionExit() {
+        val failure = MigrationAttemptResult.NotCommitted(MigrationReason.StorageFailure, true)
+        listOf(MigrationCompletion.Absent, MigrationCompletion.Unknown).forEach { completion ->
+            assertEquals(MigrationAttemptResult.RestartRequired,
+                migrationResultAfterFailure(MigrationTransactionExit.Unknown, completion, failure))
+        }
+        assertEquals(MigrationAttemptResult.Completed,
+            migrationResultAfterFailure(MigrationTransactionExit.Unknown, MigrationCompletion.Present, failure))
+    }
+
+    @Test fun confirmedTransactionFactsTakePrecedenceOverReceiptLookupFailures() {
+        val failure = MigrationAttemptResult.NotCommitted(MigrationReason.NotReady, true)
+        listOf(MigrationTransactionExit.NotStarted, MigrationTransactionExit.RolledBack).forEach { exit ->
+            assertEquals(failure, migrationResultAfterFailure(exit, MigrationCompletion.Unknown, failure))
+        }
+        assertEquals(MigrationAttemptResult.Completed,
+            migrationResultAfterFailure(MigrationTransactionExit.Committed, MigrationCompletion.Unknown, failure))
+    }
+
     @Test fun admissionUsesHostApiContractInsteadOfReleaseNames() {
         assertTrue(Api3HostAdapter.supportsHost("indi.dmzz_yyhyy.lightnovelreader", 3))
     }

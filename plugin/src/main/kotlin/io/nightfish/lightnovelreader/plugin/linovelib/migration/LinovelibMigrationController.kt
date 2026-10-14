@@ -9,6 +9,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.Process
+import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
 import android.widget.LinearLayout
@@ -17,81 +18,85 @@ import android.widget.TextView
 import io.nightfish.lightnovelreader.api.book.BookRepositoryApi
 import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
 import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
-import io.nightfish.lightnovelreader.api.userdata.UserDataPath
 import io.nightfish.lightnovelreader.api.userdata.UserDataRepositoryApi
 import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
-import java.io.File
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicReference
 
-/** One cold-start session. The database receipt, rather than this UI state, prevents repeats. */
+/** Android page/dialog adapter. The Session owns workflow; the host adapter owns storage truth. */
+@Suppress("UNUSED_PARAMETER")
 internal class LinovelibMigrationController(
     context: Context,
-    private val userData: UserDataRepositoryApi,
+    userData: UserDataRepositoryApi,
     localBooks: LocalBookDataSourceApi,
     bookshelves: BookshelfRepositoryApi,
     books: BookRepositoryApi,
     sourceManager: WebBookDataSourceManagerApi,
 ) {
-    private val context = context.applicationContext
-    private val application = this.context as? Application
+    private val application = context.applicationContext as? Application
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "LinovelibMigration").apply { isDaemon = true }
     }
-    private val adapter = Api3HostAdapter(this.context, userData, localBooks, bookshelves, books, sourceManager)
-    private val gate = Api3StartupGate(this.context)
-    private var activity = WeakReference<Activity>(null)
-    private var dialog: AlertDialog? = null
-    private var progressText: TextView? = null
-    private var progressBar: ProgressBar? = null
-    private var preparation: MigrationPreparation? = null
-    private var firstActivitySeen = false
-    private var coldSession = false
-    @Volatile private var unloaded = false
-    @Volatile private var admissionBlocked = false
-    @Volatile private var phase = Phase.Detecting
-    private var progressMessage = "正在读取和校验本地数据…"
-    private var processed = 0
-    private var total = 0
+    // Capture the original startup evidence now, never at start/retry or page recreation.
+    private val gate = Api3StartupGate(context.applicationContext)
+    private var resumedActivity = WeakReference<Activity>(null)
+    private var registered = false
 
-    private enum class Phase { Detecting, Confirming, Running, Completed, Failed, Closed }
+    private data class ProgressBinding(val activity: WeakReference<Activity>, val dialogToken: Any, val attemptId: Long)
+    private val binding = AtomicReference<ProgressBinding?>(null)
+    private class RenderedDialog(
+        val owner: Activity,
+        val dialog: AlertDialog,
+        val key: Any,
+        val token: Any,
+        val progressText: TextView? = null,
+        val progressBar: ProgressBar? = null,
+    )
+    private var rendered: RenderedDialog? = null
+
+    private val session = LinovelibMigrationSession(
+        host = Api3HostAdapter(context.applicationContext, userData),
+        runtime = object : MigrationRuntime {
+            override fun nowMillis() = SystemClock.elapsedRealtime()
+            override fun execute(task: () -> Unit) { worker.execute(task) }
+            override fun post(task: () -> Unit) { main.post(task) }
+            override fun pause(millis: Long) { Thread.sleep(millis) }
+            override fun shutdown() { worker.shutdown() }
+        },
+        admissionCheck = ::assertAdmission,
+        onState = ::render,
+    )
 
     private val callbacks = object : Application.ActivityLifecycleCallbacks {
         override fun onActivityCreated(target: Activity, savedInstanceState: Bundle?) {
-            if (!firstActivitySeen) {
-                firstActivitySeen = true
-                val intent = target.intent
-                coldSession = target.javaClass.name == MAIN_ACTIVITY && savedInstanceState == null &&
-                    intent?.data == null && (intent?.action == null || intent.action == Intent.ACTION_MAIN)
-                if (!coldSession) closeSession()
-            } else if (target.javaClass.name == MAIN_ACTIVITY && savedInstanceState == null) {
-                // A new external session cannot borrow the original cold-start admission.
-                admissionBlocked = true
-            }
+            val intent = target.intent
+            session.onActivityCreated(
+                isMain = target.javaClass.name == MAIN_ACTIVITY,
+                restored = savedInstanceState != null,
+                ordinaryEntry = intent?.data == null && (intent?.action == null || intent.action == Intent.ACTION_MAIN),
+            )
         }
 
         override fun onActivityResumed(target: Activity) {
-            if (target.javaClass.name != MAIN_ACTIVITY || unloaded || !coldSession) return
-            activity = WeakReference(target)
-            when (phase) {
-                Phase.Detecting -> {
-                    // Display at the first resume, before the user can enter another session.
-                    phase = Phase.Confirming
-                    render()
-                }
-                Phase.Confirming, Phase.Running, Phase.Completed, Phase.Failed -> render()
-                Phase.Closed -> Unit
-            }
+            if (target.javaClass.name != MAIN_ACTIVITY || !session.isAlive) return
+            if (resumedActivity.get() !== target) dismissDialog()
+            resumedActivity = WeakReference(target)
+            session.onMainResumed()
+            renderSafely(session.state)
         }
 
         override fun onActivityPaused(target: Activity) {
-            if (dialog?.ownerActivity === target) dismissDialog()
+            revokeActivity(target)
+            if (resumedActivity.get() === target) resumedActivity.clear()
+            if (rendered?.owner === target) dismissDialog()
         }
 
         override fun onActivityDestroyed(target: Activity) {
-            if (dialog?.ownerActivity === target) dismissDialog()
-            if (activity.get() === target) activity.clear()
+            revokeActivity(target)
+            if (resumedActivity.get() === target) resumedActivity.clear()
+            if (rendered?.owner === target) dismissDialog()
         }
 
         override fun onActivityStarted(target: Activity) = Unit
@@ -100,179 +105,190 @@ internal class LinovelibMigrationController(
     }
 
     fun onLoad() {
-        if (application == null) return
-        // Registration must precede source switches, exports, or source-local clearing.
-        val supported = runCatching { adapter.initialize() }.onFailure {
-            Log.w(TAG, "Migration adapter unavailable; no migration writes enabled", it)
-        }.getOrDefault(false)
-        if (!supported || runCatching { adapter.hasCompletedReceipt() }.getOrDefault(true) || !hasCandidate()) {
-            phase = Phase.Closed
-            worker.shutdown()
+        if (application == null) { session.onUnload(); return }
+        if (session.onLoad()) {
+            application.registerActivityLifecycleCallbacks(callbacks)
+            registered = true
+        }
+    }
+
+    private fun assertAdmission(attemptId: Long) {
+        val current = binding.get()
+        val target = current?.activity?.get()
+        if (current == null || target == null || current.attemptId != attemptId) {
+            throw MigrationAdmissionException(MigrationReason.NotReady, true)
+        }
+        // The immutable binding includes the main thread's resumed + actually-shown facts.
+        // Never touch Dialog controls or synchronously wait for main while in a transaction.
+        gate.assertReady(target)
+        if (binding.get() !== current) throw MigrationAdmissionException(MigrationReason.NotReady, true)
+    }
+
+    private fun revokeActivity(target: Activity) {
+        val current = binding.get() ?: return
+        if (current.activity.get() === target) binding.compareAndSet(current, null)
+    }
+
+    private fun revokeDialog(token: Any) {
+        val current = binding.get() ?: return
+        if (current.dialogToken === token) binding.compareAndSet(current, null)
+    }
+
+    private fun renderSafely(state: MigrationState) {
+        runCatching { render(state) }.onFailure {
+            Log.e(TAG, "Migration dialog could not be displayed", it)
+            session.onForegroundDisplayFailure()
+        }
+    }
+
+    private fun render(state: MigrationState) {
+        if (state == MigrationState.Closed) {
+            binding.set(null)
+            dismissDialog()
+            if (registered) application?.unregisterActivityLifecycleCallbacks(callbacks)
+            registered = false
             return
         }
-        application.registerActivityLifecycleCallbacks(callbacks)
-    }
-
-    private fun hasCandidate(): Boolean {
-        val selected = userData.intUserData(UserDataPath.Settings.Data.WebDataSourceId.path).get()
-        if (selected != TW_ID && selected != CURRENT_ID) return false
-        return selected == TW_ID || File(context.dataDir, "local_data/$TW_ID").isFile ||
-            File(context.dataDir, "local_data/-1").isFile
-    }
-
-    private fun start() {
-        if (phase != Phase.Confirming && phase != Phase.Failed) return
-        activity.get() ?: return
-        phase = Phase.Running
-        progressMessage = "正在读取和校验本地数据…"
-        processed = 0
-        total = 0
-        render()
-        worker.execute {
-            runCatching {
-                awaitStartup()
-                val input = preparation ?: adapter.prepare()
-                if (input == null) {
-                    check(adapter.hasCompletedReceipt()) { "没有待迁入的数据，或旧数据已合并到非活动源" }
-                    return@runCatching MigrationCommitResult.AlreadyCompleted
-                }
-                updateProgress("正在合并本地数据…", 0, input.bookCount)
-                adapter.commit(input, { done, count ->
-                    updateProgress(if (count > 0 && done == count) "正在整理和保存合并结果…" else "正在合并本地数据…", done, count)
-                }, {
-                    check(!unloaded && !admissionBlocked) { "Migration startup session changed" }
-                    gate.assertReady(activity.get() ?: error("Migration activity is being recreated"))
-                })
-            }.fold(
-                onSuccess = { result ->
-                    Log.i(TAG, "Migration $result; receipt and data committed together")
-                    main.post {
-                        phase = Phase.Completed
-                        render()
-                    }
-                },
-                onFailure = { error ->
-                    Log.e(TAG, "Migration did not complete", error)
-                    val committed = runCatching { adapter.hasCompletedReceipt() }.getOrDefault(false)
-                    main.post {
-                        preparation = null
-                        phase = if (committed) Phase.Completed else Phase.Failed
-                        render()
-                    }
-                },
-            )
+        if (state == MigrationState.AwaitingEntry) return
+        if (!session.isAlive) return
+        val target = resumedActivity.get()
+        if (target == null || target.isFinishing || target.isDestroyed) {
+            check(state != MigrationState.Confirming) { "Initial migration modal has no resumed page" }
+            return
         }
-    }
-
-    private fun awaitStartup() {
-        repeat(120) {
-            check(!unloaded && !admissionBlocked) { "Migration startup session changed" }
-            val target = activity.get()
-            if (target != null && gate.isReady(target)) return
-            Thread.sleep(250)
+        val key = if (state is MigrationState.Running) state.attemptId else state
+        val previous = rendered
+        if (previous?.owner === target && previous.key == key && previous.dialog.isShowing) {
+            if (state is MigrationState.Running) updateProgress(previous, state.progress)
+            return
         }
-        error("Host startup is not ready for migration")
-    }
-
-    private fun updateProgress(message: String, done: Int, count: Int) {
-        main.post {
-            progressMessage = message
-            processed = done
-            total = count
-            if (phase == Phase.Running) updateProgressView()
-        }
-    }
-
-    private fun render() {
-        val target = activity.get() ?: return
-        if (target.isFinishing || target.isDestroyed || unloaded) return
         dismissDialog()
         val builder = AlertDialog.Builder(target, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-        when (phase) {
-            Phase.Confirming -> builder
+        var text: TextView? = null
+        var bar: ProgressBar? = null
+        when (state) {
+            MigrationState.Confirming -> builder
                 .setTitle("合并 TW 数据")
                 .setMessage(
                     "检测到 Linovelib TW 的本地数据，是否合并到当前 Linovelib？\n\n" +
                         "书架、阅读记录和阅读时长将一并合并。书籍资料、目录和正文缓存优先保留当前 Linovelib 已有的数据。\n\n" +
                         "完成后请重新打开阅读器。"
                 )
-                .setPositiveButton("开始同步") { _, _ -> start() }
-                .setNegativeButton("暂不同步") { _, _ -> closeSession() }
-                .setOnCancelListener { closeSession() }
-            Phase.Running -> {
-                val density = target.resources.displayMetrics.density
-                val padding = (24 * density).toInt()
+                .setPositiveButton("开始同步") { _, _ -> session.start() }
+                .setNegativeButton("暂不同步") { _, _ -> session.dismiss() }
+                .setOnCancelListener { session.dismiss() }
+            is MigrationState.Running -> {
+                val padding = (24 * target.resources.displayMetrics.density).toInt()
                 val layout = LinearLayout(target).apply {
                     orientation = LinearLayout.VERTICAL
                     gravity = Gravity.CENTER_VERTICAL
                     setPadding(padding, padding / 2, padding, padding)
                 }
-                progressText = TextView(target).also { layout.addView(it) }
-                progressBar = ProgressBar(target, null, android.R.attr.progressBarStyleHorizontal).also {
+                text = TextView(target).also { layout.addView(it) }
+                bar = ProgressBar(target, null, android.R.attr.progressBarStyleHorizontal).also {
                     layout.addView(it, LinearLayout.LayoutParams(-1, -2).apply { topMargin = padding / 2 })
                 }
                 builder.setTitle("正在同步").setView(layout).setCancelable(false)
-                updateProgressView()
             }
-            Phase.Completed -> builder
+            MigrationState.Completed -> builder
                 .setTitle("同步已完成")
                 .setMessage("数据已保存。请重新打开阅读器，加载合并后的数据。")
                 .setCancelable(false)
-                .setPositiveButton("关闭阅读器") { _, _ ->
-                    target.finishAffinity()
-                    Process.killProcess(Process.myPid())
-                }
-            Phase.Failed -> builder
+                .setPositiveButton("关闭阅读器") { _, _ -> closeReader(target) }
+            MigrationState.RestartRequired -> builder
+                .setTitle("保存结果待确认")
+                .setMessage("暂时无法确认本次保存结果。为避免重复合并，请关闭并重新打开阅读器后再检查。")
+                .setCancelable(false)
+                .setPositiveButton("关闭阅读器") { _, _ -> closeReader(target) }
+            is MigrationState.RetryableFailure -> builder
                 .setTitle("同步未完成")
-                .setMessage("本次同步未完成。可以重试，或关闭后稍后再试；重试会先检查保存状态，避免重复累计。")
-                .setPositiveButton("重试") { _, _ -> start() }
-                .setNegativeButton("关闭") { _, _ -> closeSession() }
-                .setOnCancelListener { closeSession() }
-            Phase.Detecting, Phase.Closed -> return
+                .setMessage("本次同步未完成，已确认没有保存本次合并结果。${reasonMessage(state.reason)}")
+                .setPositiveButton("重试") { _, _ -> session.start() }
+                .setNegativeButton("关闭") { _, _ -> session.dismiss() }
+                .setOnCancelListener { session.dismiss() }
+            is MigrationState.Stopped -> builder
+                .setTitle("本次未同步")
+                .setMessage(reasonMessage(state.reason))
+                .setPositiveButton("关闭") { _, _ -> session.dismiss() }
+                .setOnCancelListener { session.dismiss() }
+            MigrationState.AwaitingEntry, MigrationState.Closed -> return
         }
-        dialog = builder.create().also {
-            it.setOwnerActivity(target)
-            it.setCanceledOnTouchOutside(phase == Phase.Confirming || phase == Phase.Failed)
-            it.show()
+        val token = Any()
+        val dialog = builder.create()
+        val record = RenderedDialog(target, dialog, key, token, text, bar)
+        dialog.setOwnerActivity(target)
+        dialog.setCanceledOnTouchOutside(state == MigrationState.Confirming || state is MigrationState.RetryableFailure || state is MigrationState.Stopped)
+        dialog.setOnDismissListener {
+            // Delayed dismissal of an old confirmation cannot revoke a new progress modal.
+            revokeDialog(token)
+            if (rendered === record) rendered = null
+        }
+        rendered = record
+        try {
+            if (state is MigrationState.Running) updateProgress(record, state.progress)
+            dialog.show()
+            check(dialog.isShowing) { "Migration dialog did not become visible" }
+            if (state is MigrationState.Running && session.isAlive && resumedActivity.get() === target) {
+                binding.set(ProgressBinding(WeakReference(target), token, state.attemptId))
+            }
+        } catch (failure: Exception) {
+            revokeDialog(token)
+            if (rendered === record) rendered = null
+            runCatching { dialog.dismiss() }
+            Log.e(TAG, "Migration dialog could not be displayed", failure)
+            throw failure
         }
     }
 
-    private fun updateProgressView() {
-        progressText?.text = if (total > 0) "$progressMessage\n已处理 $processed / $total 本" else progressMessage
-        progressBar?.apply {
-            isIndeterminate = total <= 0 || processed >= total
-            if (!isIndeterminate) {
-                max = total
-                progress = processed
-            }
+    private fun updateProgress(record: RenderedDialog, progress: MigrationProgress) {
+        val message = when (progress.stage) {
+            MigrationStage.Waiting -> "正在等待应用初始化…"
+            MigrationStage.Reading -> "正在读取和校验本地数据…"
+            MigrationStage.Merging -> "正在合并本地数据…"
+            MigrationStage.Saving -> "正在整理和保存合并结果…"
+            MigrationStage.Verifying -> "正在核对保存结果…"
+        }
+        record.progressText?.text = if (progress.total > 0) "$message\n已处理 ${progress.processed} / ${progress.total} 本" else message
+        record.progressBar?.apply {
+            isIndeterminate = progress.stage != MigrationStage.Merging || progress.total <= 0 || progress.processed >= progress.total
+            if (!isIndeterminate) { max = progress.total; this.progress = progress.processed }
         }
     }
 
     private fun dismissDialog() {
-        dialog?.dismiss()
-        dialog = null
-        progressText = null
-        progressBar = null
+        val previous = rendered ?: return
+        revokeDialog(previous.token)
+        rendered = null
+        runCatching { previous.dialog.dismiss() }.onFailure { Log.w(TAG, "Migration dialog cleanup failed", it) }
     }
 
-    private fun closeSession() {
-        phase = Phase.Closed
-        dismissDialog()
-        application?.unregisterActivityLifecycleCallbacks(callbacks)
-        worker.shutdown()
+    private fun closeReader(target: Activity) {
+        target.finishAffinity()
+        Process.killProcess(Process.myPid())
     }
 
     fun onUnload() {
-        unloaded = true
-        application?.unregisterActivityLifecycleCallbacks(callbacks)
-        main.post { dismissDialog() }
-        worker.shutdown()
+        binding.set(null)
+        session.onUnload()
+    }
+
+    private fun reasonMessage(reason: MigrationReason): String = when (reason) {
+        MigrationReason.NoData -> "没有可迁入的 TW 数据，本次未保存任何合并结果。"
+        MigrationReason.TargetAlreadyMigratedInactive -> "当前 Linovelib 的本地数据中已有迁入记录，本次没有再次合并。"
+        MigrationReason.NotReady -> "请返回前台，等待应用初始化完成后重试。"
+        MigrationReason.StartupConflict -> "当前启动有后台任务，请关闭并重新打开阅读器后再试。"
+        MigrationReason.SessionChanged -> "当前启动会话已变化，请关闭并重新打开阅读器后再试。"
+        MigrationReason.DisplayUnavailable -> "迁入窗口未能显示，请返回主页面后重试。"
+        MigrationReason.SchedulingFailure -> "本次任务未能启动，可以重试。"
+        MigrationReason.SourceChanged -> "当前数据源已变化，本次没有继续合并。请重新打开阅读器后再试。"
+        MigrationReason.InputChanged -> "本地快照已变化，重试时将重新读取和校验。"
+        MigrationReason.InvalidData -> "本地数据或完成凭据无法通过校验，请检查本地数据后重新打开阅读器。"
+        MigrationReason.UnsupportedHost -> "当前宿主状态不符合迁入条件，请重新打开阅读器后再试。"
+        MigrationReason.StorageFailure -> "本地数据读取或保存失败，可以重试。"
     }
 
     companion object {
         private const val TAG = "LinovelibMigration"
         private const val MAIN_ACTIVITY = "indi.dmzz_yyhyy.lightnovelreader.MainActivity"
-        private val TW_ID = "linovelib_tw".hashCode()
-        private val CURRENT_ID = "linovelib".hashCode()
     }
 }

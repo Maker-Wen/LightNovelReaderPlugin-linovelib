@@ -4,39 +4,50 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteDatabaseCorruptException
+import android.database.sqlite.SQLiteException
 import android.util.Base64
-import io.nightfish.lightnovelreader.api.book.BookRepositoryApi
-import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
-import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
+import android.util.Log
 import io.nightfish.lightnovelreader.api.userdata.UserDataRepositoryApi
-import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
 import kotlinx.serialization.json.*
 import java.io.File
 import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.util.UUID
 
-internal data class MigrationPreparation(
-    val activeSourceId: Int,
-    val current: MigrationSnapshot,
-    val tw: MigrationSnapshot,
-    val bookCount: Int,
-    val inputFingerprint: String,
-    val files: List<MigrationSnapshotCodec.Input>,
-    val snapshotStamps: Map<File, String?>,
-)
+internal enum class MigrationTransactionExit { NotStarted, RolledBack, Committed, Unknown }
+internal enum class MigrationCompletion { Present, Absent, Unknown }
 
-internal enum class MigrationCommitResult { Committed, AlreadyCompleted }
+internal fun migrationResultAfterFailure(
+    exit: MigrationTransactionExit,
+    completion: MigrationCompletion,
+    failure: MigrationAttemptResult.NotCommitted,
+): MigrationAttemptResult = when {
+    exit == MigrationTransactionExit.Committed -> MigrationAttemptResult.Completed
+    exit == MigrationTransactionExit.NotStarted || exit == MigrationTransactionExit.RolledBack -> failure
+    completion == MigrationCompletion.Present -> MigrationAttemptResult.Completed
+    else -> MigrationAttemptResult.RestartRequired
+}
 
 /** All host-private access is kept here. This class never opens or copies a database file. */
 internal class Api3HostAdapter(
     private val context: Context,
     private val userData: UserDataRepositoryApi,
-    private val localBookDataSource: LocalBookDataSourceApi,
-    private val bookshelfRepository: BookshelfRepositoryApi,
-    private val bookRepository: BookRepositoryApi,
-    private val webDataSourceManager: WebBookDataSourceManagerApi,
-) {
+) : MigrationHost {
+    private data class Preparation(
+        val activeSourceId: Int,
+        val current: MigrationSnapshot,
+        val tw: MigrationSnapshot,
+        val snapshotStamps: Map<File, String?>,
+    )
+
+    private sealed interface Prepared {
+        data class Ready(val input: Preparation) : Prepared
+        data class Finished(val result: MigrationAttemptResult) : Prepared
+    }
+
+    private class InputChanged : IllegalStateException()
+    private class SourceChanged : IllegalStateException()
     private val codec = MigrationSnapshotCodec()
     private val planner = MigrationPlanner
     private lateinit var database: SQLiteDatabase
@@ -45,7 +56,7 @@ internal class Api3HostAdapter(
     private lateinit var sourcePaths: Set<String>
 
     /** Enable writes only when the host exposes the verified shared API 3 storage contract. */
-    fun initialize(): Boolean {
+    private fun initialize(): Boolean {
         if (context.packageName != HOST_PACKAGE) return false
         // Read the host field: linking the API const directly would inline the plugin SDK's 3.
         val apiVersion = runCatching {
@@ -90,84 +101,188 @@ internal class Api3HostAdapter(
         return true
     }
 
-    fun prepare(): MigrationPreparation? {
-        require(::database.isInitialized) { "宿主适配尚未初始化" }
+    override fun inspectOnLoad(): MigrationLoadResult = try {
+        if (!initialize()) MigrationLoadResult.Disabled else inTransaction {
+            val source = selectedSource()
+            when {
+                source !in setOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID) -> MigrationLoadResult.Disabled
+                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null -> MigrationLoadResult.Disabled
+                source == MigrationData.TW_SOURCE_ID || snapshotFile(MigrationData.TW_SOURCE_ID).isFile || snapshotFile(-1).isFile ->
+                    MigrationLoadResult.Candidate
+                else -> MigrationLoadResult.Disabled
+            }
+        }
+    } catch (failure: Exception) {
+        Log.w("LinovelibMigration", "Migration adapter unavailable; no migration writes enabled", failure)
+        MigrationLoadResult.Disabled
+    }
+
+    override fun executeAttempt(admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult {
+        val prepared = try {
+            assertStorageIdentity()
+            check(!database.inTransaction()) { "迁入线程已有未结算事务" }
+            onProgress(MigrationProgress(MigrationStage.Reading))
+            prepare()
+        } catch (failure: Exception) {
+            Log.e("LinovelibMigration", "Migration preflight did not complete", failure)
+            return notCommitted(failure)
+        }
+        if (prepared is Prepared.Finished) return prepared.result
+        return commit((prepared as Prepared.Ready).input, admissionCheck, onProgress)
+    }
+
+    private fun prepare(): Prepared {
         val source = selectedSource()
-        if (source !in setOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID)) return null
+        if (source !in setOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID)) {
+            return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.SourceChanged))
+        }
         val active = inTransaction {
-            require(selectedSource() == source) { "活动源已变化，请重新预检" }
+            if (selectedSource() != source) throw SourceChanged()
             readActive(source)
         }
-        if (source == MigrationData.CURRENT_SOURCE_ID && receipt(active) != null) return null
-        val files = mutableListOf<MigrationSnapshotCodec.Input>()
+        if (source == MigrationData.CURRENT_SOURCE_ID && receipt(active) != null) {
+            return Prepared.Finished(MigrationAttemptResult.Completed)
+        }
         val stamps = listOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID, -1).associate { id ->
             snapshotFile(id).let { it to if (it.isFile) MigrationSnapshotCodec.digest(it) else null }
         }
         val inactiveId = if (source == MigrationData.CURRENT_SOURCE_ID) MigrationData.TW_SOURCE_ID else MigrationData.CURRENT_SOURCE_ID
         val inactiveFile = snapshotFile(inactiveId)
-        val inactive = if (inactiveFile.exists()) codec.read(inactiveFile, inactiveId).also(files::add).snapshot else MigrationData.emptySnapshot(inactiveId)
-        if (inactiveId == MigrationData.CURRENT_SOURCE_ID && receipt(inactive) != null) return null
+        val inactive = if (inactiveFile.exists()) codec.read(inactiveFile, inactiveId).snapshot else MigrationData.emptySnapshot(inactiveId)
+        if (inactiveId == MigrationData.CURRENT_SOURCE_ID && receipt(inactive) != null) {
+            return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.TargetAlreadyMigratedInactive))
+        }
         val current = if (source == MigrationData.CURRENT_SOURCE_ID) active else inactive
         var tw = if (source == MigrationData.TW_SOURCE_ID) active else inactive
         if (source == MigrationData.CURRENT_SOURCE_ID && snapshotFile(-1).exists()) {
-            val alias = codec.read(snapshotFile(-1), -1).also(files::add).snapshot
+            val alias = codec.read(snapshotFile(-1), -1).snapshot
             if (inactiveFile.exists()) require(planner.personalFingerprint(tw) == planner.personalFingerprint(alias)) {
                 "TW 与 -1 快照无法证明属于同一份个人数据"
             } else tw = alias
         }
-        if (MigrationData.TABLES.all { tw.data.getValue(it).jsonArray.isEmpty() }) return null
+        if (MigrationData.TABLES.all { tw.data.getValue(it).jsonArray.isEmpty() }) {
+            return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.NoData))
+        }
         planner.validate(current)
         planner.validate(tw)
-        val plan = planner.plan(current, tw)
+        planner.plan(current, tw)
         checkSnapshotStamps(stamps)
-        return MigrationPreparation(source, current, tw, plan.bookCount, plan.twFingerprint, files, stamps)
+        return Prepared.Ready(Preparation(source, current, tw, stamps))
     }
 
-    /** Small receipt lookup, also used to resolve an exception reported after the SQLite commit. */
-    fun hasCompletedReceipt(): Boolean {
-        require(::database.isInitialized) { "宿主适配尚未初始化" }
-        if (selectedSource() != MigrationData.CURRENT_SOURCE_ID) return false
+    /** The caller reads source and receipt within the same transaction. */
+    private fun activeReceipt(): JsonObject? {
         val row = database.rawQuery("SELECT path,`group`,type,value FROM user_data WHERE path=?", arrayOf(RECEIPT_PATH)).use { cursor ->
-            if (!cursor.moveToFirst()) return false
+            if (!cursor.moveToFirst()) return null
             JsonObject(listOf("path", "group", "type", "value").associateWith { name ->
                 JsonPrimitive(cursor.getString(cursor.getColumnIndexOrThrow(name)))
             })
         }
         val empty = MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID)
-        return receipt(MigrationSnapshot(empty.sourceId, JsonObject(empty.data + ("userDataEntities" to JsonArray(listOf(row)))))) != null
+        return receipt(MigrationSnapshot(empty.sourceId, JsonObject(empty.data + ("userDataEntities" to JsonArray(listOf(row))))))
     }
 
-    fun commit(prepared: MigrationPreparation, onProgress: (Int, Int) -> Unit = { _, _ -> }, admissionCheck: () -> Unit = {}): MigrationCommitResult {
-        admissionCheck()
-        return inTransaction {
-            if (hasCompletedReceipt()) return@inTransaction MigrationCommitResult.AlreadyCompleted
-            require(selectedSource() == prepared.activeSourceId) { "活动源已变化，请重新预检" }
-            val active = readActive(prepared.activeSourceId)
-            if (prepared.activeSourceId == MigrationData.CURRENT_SOURCE_ID && receipt(active) != null) return@inTransaction MigrationCommitResult.AlreadyCompleted
-            checkSnapshotStamps(prepared.snapshotStamps)
-            // Re-read live activity data under the write transaction; never commit the stale preflight copy.
-            val current = if (prepared.activeSourceId == MigrationData.CURRENT_SOURCE_ID) active else prepared.current
-            val tw = if (prepared.activeSourceId == MigrationData.TW_SOURCE_ID) active else prepared.tw
-            if (receipt(current) != null) return@inTransaction MigrationCommitResult.AlreadyCompleted
-            val plan = planner.plan(current, tw, onProgress)
-            writeSnapshot(plan.snapshot)
-            writeUserData(SOURCE_PATH, "Int", MigrationData.CURRENT_SOURCE_ID.toString())
-            writeUserData(RECEIPT_PATH, "String", buildJsonObject {
-                put("kind", "linovelib_tw_once")
-                put("ruleVersion", 1)
-                put("sourceId", MigrationData.TW_SOURCE_ID)
-                put("targetId", MigrationData.CURRENT_SOURCE_ID)
-                put("personalFingerprint", plan.twFingerprint)
-                put("commitId", UUID.randomUUID().toString())
-            }.toString())
+    private fun commit(prepared: Preparation, admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult {
+        var began = false
+        var markedSuccessful = false
+        var ended = false
+        var failure: Exception? = null
+        try {
+            assertStorageIdentity()
+            check(!database.inTransaction()) { "迁入线程已有未结算事务" }
             admissionCheck()
-            MigrationCommitResult.Committed
+            database.beginTransaction()
+            began = true
+            val source = selectedSource()
+            if (source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null) {
+                // No second write when a receipt was committed since preflight.
+                database.setTransactionSuccessful()
+                markedSuccessful = true
+            } else {
+                if (source != prepared.activeSourceId) throw SourceChanged()
+                val active = readActive(prepared.activeSourceId)
+                checkSnapshotStamps(prepared.snapshotStamps)
+                // Re-read live activity data under the write transaction; never commit the stale preflight copy.
+                val current = if (prepared.activeSourceId == MigrationData.CURRENT_SOURCE_ID) active else prepared.current
+                val tw = if (prepared.activeSourceId == MigrationData.TW_SOURCE_ID) active else prepared.tw
+                val plan = planner.plan(current, tw) { done, count ->
+                    onProgress(MigrationProgress(if (count > 0 && done == count) MigrationStage.Saving else MigrationStage.Merging, done, count))
+                }
+                onProgress(MigrationProgress(MigrationStage.Saving, plan.bookCount, plan.bookCount))
+                writeSnapshot(plan.snapshot)
+                writeUserData(SOURCE_PATH, "Int", MigrationData.CURRENT_SOURCE_ID.toString())
+                writeUserData(RECEIPT_PATH, "String", buildJsonObject {
+                    put("kind", "linovelib_tw_once")
+                    put("ruleVersion", 1)
+                    put("sourceId", MigrationData.TW_SOURCE_ID)
+                    put("targetId", MigrationData.CURRENT_SOURCE_ID)
+                    put("personalFingerprint", plan.twFingerprint)
+                    put("commitId", UUID.randomUUID().toString())
+                }.toString())
+                // Never wait for the main thread while holding the transaction. No callbacks or
+                // extra business work may be inserted between this check and marking success.
+                admissionCheck()
+                database.setTransactionSuccessful()
+                markedSuccessful = true
+            }
+        } catch (error: Exception) {
+            failure = error
+        } finally {
+            if (began) {
+                try {
+                    database.endTransaction()
+                    ended = true
+                } catch (error: Exception) {
+                    failure?.addSuppressed(error) ?: run { failure = error }
+                }
+            }
         }
+        val error = failure ?: return MigrationAttemptResult.Completed
+        Log.e("LinovelibMigration", "Migration transaction did not return normally", error)
+        val exit = when {
+            !began -> MigrationTransactionExit.NotStarted
+            !ended -> MigrationTransactionExit.Unknown
+            markedSuccessful -> MigrationTransactionExit.Committed
+            else -> MigrationTransactionExit.RolledBack
+        }
+        // Never inspect our own uncommitted receipt. Unknown exit remains non-retryable even
+        // when an independent, stable lookup reports no receipt.
+        val completion = if (exit == MigrationTransactionExit.Unknown) {
+            onProgress(MigrationProgress(MigrationStage.Verifying))
+            inspectCompletion(prepared.activeSourceId)
+        } else MigrationCompletion.Unknown
+        return migrationResultAfterFailure(exit, completion, notCommitted(error))
     }
 
-    /** After committing, callers terminate the old activity session to discard stale ViewModels. */
-    fun refreshProvider() {
-        webDataSourceManager.javaClass.getMethod("onWebDataSourceListChange").invoke(webDataSourceManager)
+    private fun inspectCompletion(originalSource: Int): MigrationCompletion = try {
+        assertStorageIdentity()
+        if (database.inTransaction()) MigrationCompletion.Unknown else inTransaction {
+            val source = selectedSource()
+            when {
+                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null -> MigrationCompletion.Present
+                source == originalSource && activeReceipt() == null -> MigrationCompletion.Absent
+                else -> MigrationCompletion.Unknown
+            }
+        }
+    } catch (failure: Exception) {
+        Log.w("LinovelibMigration", "Migration completion could not be verified", failure)
+        MigrationCompletion.Unknown
+    }
+
+    private fun notCommitted(failure: Exception): MigrationAttemptResult.NotCommitted = when (failure) {
+        is MigrationAdmissionException -> MigrationAttemptResult.NotCommitted(failure.reason, failure.retryable)
+        is InputChanged -> MigrationAttemptResult.NotCommitted(MigrationReason.InputChanged, true)
+        is SourceChanged -> MigrationAttemptResult.NotCommitted(MigrationReason.SourceChanged, false)
+        is SQLiteDatabaseCorruptException -> MigrationAttemptResult.NotCommitted(MigrationReason.InvalidData, false)
+        is SQLiteException -> MigrationAttemptResult.NotCommitted(MigrationReason.StorageFailure, true)
+        is IllegalArgumentException -> MigrationAttemptResult.NotCommitted(MigrationReason.InvalidData, false)
+        else -> MigrationAttemptResult.NotCommitted(MigrationReason.UnsupportedHost, false)
+    }
+
+    private fun assertStorageIdentity() {
+        require(::database.isInitialized && database.isOpen && !database.isReadOnly && database.version == 17)
+        require(File(database.path).canonicalFile == context.getDatabasePath("light_novel_reader_database").canonicalFile)
+        require(field(localDataManager, "userDataDao") === field(userData, "userDataDao"))
     }
 
     private fun actualLocalDataManager(): Any {
@@ -289,7 +404,7 @@ internal class Api3HostAdapter(
 
     private fun checkSnapshotStamps(stamps: Map<File, String?>) {
         stamps.forEach { (file, digest) ->
-            require((if (file.isFile) MigrationSnapshotCodec.digest(file) else null) == digest) { "来源快照已变化，请重新预检" }
+            if ((if (file.isFile) MigrationSnapshotCodec.digest(file) else null) != digest) throw InputChanged()
         }
     }
 

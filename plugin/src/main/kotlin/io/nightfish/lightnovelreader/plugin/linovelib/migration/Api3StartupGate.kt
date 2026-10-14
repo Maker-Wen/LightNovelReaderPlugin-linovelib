@@ -26,32 +26,26 @@ internal class Api3StartupGate(private val context: Context) {
     private val initialWorkCheck = runCatching { noConflictingWorkSpecs() }.getOrDefault(false)
     private var lastInitializerDiagnostic: String? = null
     private var lastWorkerDiagnostic: String? = null
-    private var lastReadinessFailure: String? = null
 
     init {
         Log.i(TAG, "STARTUP_GATE_CAPTURE cold=$startupWasCold initialWorkClear=$initialWorkCheck")
     }
 
     /** Called on an IO thread while the controller owns the native startup modal. */
-    fun isReady(activity: Activity): Boolean = runCatching {
-        assertReady(activity)
-        true
-    }.onFailure { failure ->
-        val diagnostic = "${failure.javaClass.name}: ${failure.message}"
-        if (diagnostic != lastReadinessFailure) {
-            lastReadinessFailure = diagnostic
-            Log.w(TAG, "STARTUP_GATE_WAIT $diagnostic", failure)
-        }
-    }.getOrDefault(false)
-
     fun assertReady(activity: Activity) {
-        check(startupWasCold && initialWorkCheck) { "当前启动有后台任务，请稍后重新打开应用后同步" }
-        check(activity.javaClass.name == MAIN_ACTIVITY && !activity.isFinishing && !activity.isDestroyed) {
-            "当前页面不适合开始同步，请重新打开应用"
+        if (!startupWasCold || !initialWorkCheck) {
+            throw MigrationAdmissionException(MigrationReason.StartupConflict, false)
         }
-        check(defaultBookshelfInitializationFinished(activity)) { "正在等待应用初始化，请稍后重试" }
-        check(noConflictingWorkSpecs()) { "应用后台任务正在运行，请稍后重新打开应用后同步" }
-        check(noExecutingWorkers(activity)) { "应用后台任务尚未结束，请稍后重新打开应用后同步" }
+        if (activity.javaClass.name != MAIN_ACTIVITY || activity.isFinishing || activity.isDestroyed) {
+            throw MigrationAdmissionException(MigrationReason.NotReady, true)
+        }
+        val ready = try {
+            defaultBookshelfInitializationFinished(activity) && noConflictingWorkSpecs() && noExecutingWorkers(activity)
+        } catch (failure: Exception) {
+            Log.w(TAG, "Migration startup contract could not be verified", failure)
+            throw MigrationAdmissionException(MigrationReason.UnsupportedHost, false)
+        }
+        if (!ready) throw MigrationAdmissionException(MigrationReason.NotReady, true)
     }
 
     private fun defaultBookshelfInitializationFinished(activity: Activity): Boolean {
