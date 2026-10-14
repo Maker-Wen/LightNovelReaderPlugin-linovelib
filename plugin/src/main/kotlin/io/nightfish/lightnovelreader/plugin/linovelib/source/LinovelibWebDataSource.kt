@@ -36,14 +36,21 @@ internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
     name = "Linovelib",
     provider = "linovelib.com"
 )
-class LinovelibWebDataSource(
-    private val context: Context
+class LinovelibWebDataSource internal constructor(
+    private val context: Context,
+    private val metadata: LinovelibMetadataStore,
+    private val diagnostics: LinovelibDiagnostics,
+    detailHtmlLoader: (suspend (String) -> String)?
 ) : WebBookDataSource {
+    // Keep the host's public injection constructor unchanged.
+    constructor(context: Context) : this(context, LinovelibMetadataStore(), LinovelibDiagnostics(), null)
+
     private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
-    private val metadata = LinovelibMetadataStore()
-    private val diagnostics = LinovelibDiagnostics()
     private val scope = CoroutineScope(Dispatchers.IO)
     private val httpClient = LinovelibHttpClient(diagnostics = diagnostics)
+    private val details = LinovelibBookDetails(
+        detailHtmlLoader ?: httpClient::loadHtml, parser, diagnostics, metadata = metadata
+    )
     private var offlineMonitorJob: Job? = null
     override val permits: Int = 1
     override val cache: Cache = Cache(
@@ -59,7 +66,8 @@ class LinovelibWebDataSource(
         parser,
         diagnostics,
         LinovelibUrls.HOST,
-        metadata
+        metadata,
+        details
     )
     override val searchProvider: SearchProvider = linovelibSearchProvider
     private val linovelibExplorePageProvider = LinovelibExplorePageProvider(
@@ -93,9 +101,8 @@ class LinovelibWebDataSource(
 
     override suspend fun getBookInformation(id: String): BookInformation = withContext(Dispatchers.IO) {
         runCatching {
-            parser.parseBookInformation(id, httpClient.loadHtml(LinovelibUrls.book(LinovelibUrls.HOST, id)))
-                .also(metadata::rememberBook).toBookInformation()
-                .takeUnless(BookInformation::isEmpty)
+            details.fetch(id)?.toBookInformation()
+                ?.takeUnless(BookInformation::isEmpty)
                 ?: fallbackBookInformation(id)
         }.getOrElse { error ->
             error.rethrowIfCancellation()

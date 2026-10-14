@@ -2,7 +2,7 @@
 
 [文档索引](README.md) · [开发与验证](development.md) · [TW 数据迁入](tw-data-migration.md)
 
-本说明以 `e1ad8de`（2026-10-13）的三项架构改造为基础，并包含同日的首页展示摘要调整及 2026-10-14 的统一列表页识别。分页会话隔离、HTTP 会话抽离、Parser 与临时元数据拆分均已实现。方案取舍保留在 [历史设计](archive/2026-09-25-linovelib-architecture-design.md)，前三项的验证范围见 [改造验证记录](archive/2026-10-13-architecture-validation.md)。
+本说明以 `e1ad8de`（2026-10-13）的三项架构改造为基础，并包含同日的首页展示摘要调整，以及 2026-10-14 的统一列表页识别、详情获取与接纳收拢。分页会话隔离、HTTP 会话抽离、Parser 与临时元数据拆分均已实现。方案取舍保留在 [历史设计](archive/2026-09-25-linovelib-architecture-design.md)，前三项的验证范围见 [改造验证记录](archive/2026-10-13-architecture-validation.md)。
 
 ## 模块与入口
 
@@ -13,7 +13,8 @@
 | [LinovelibPlugin](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/LinovelibPlugin.kt) | 插件生命周期，接入 TW 迁入控制器 | 插件实例 |
 | [LinovelibWebDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibWebDataSource.kt) | 装配请求、解析、元数据、搜索、探索与图片组件，适配宿主接口 | 数据源实例的宿主 Cache、加载检查任务 |
 | [LinovelibHttpClient](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHttpClient.kt) | HTML 请求、搜索验证、Cookie、重试和可用性检查 | 一个数据源的 HTTP 会话 |
-| [LinovelibSearchProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchProvider.kt) / [SearchDetails](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchDetails.kt) | 首批结果、详情补全与搜索事件 | 单次搜索已展示的可变书籍对象 |
+| [LinovelibSearchProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchProvider.kt) | 搜索识别、结果事件及宿主对象更新 | 单次搜索已展示的可变书籍对象 |
+| [LinovelibBookDetails](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibBookDetails.kt) | 详情获取、解析与接纳，搜索首批及串行补全 | 复用一个源的 MetadataStore，不另存缓存 |
 | [LinovelibExplorePageProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibExplorePageProvider.kt) | 四个栏目、展开页定义登记、创建页面实例 | 源内稳定页面定义，不持有页面会话 |
 | [LinkedExpandedPageDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRelatedSearch.kt) | 筛选、分页、加载更多和取消 | 页面持有筛选与当前通道；一次收集持有页码、URL 快照及去重集合 |
 | [LinovelibHtmlParser](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHtmlParser.kt) | HTML 转为 `Parsed*` 数据，包括原始关联链接 | 无跨调用可变状态 |
@@ -22,7 +23,7 @@
 | [LinovelibImageStore](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibStoredImage.kt) | 插图下载、校验和本地文件引用 | 既有图片下载与磁盘缓存 |
 | [migration 包](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/migration) | TW 本地数据读取、合并、事务与重复保护 | 见 [迁入规则](tw-data-migration.md) |
 
-调用由宿主入口或 Provider 发起：HTTP 获取网页，Parser 产出数据，调用方显式记录元数据，再映射为宿主类型。Parser 不访问宿主导航或临时存储；HttpClient 不解释书籍和目录。图片下载沿用独立链路。
+调用由宿主入口或 Provider 发起：HTTP 获取网页，Parser 产出数据，详情由 BookDetails 接纳元数据，列表摘要仍由调用方显式记录，最后映射为宿主类型。Parser 不访问宿主导航或临时存储；HttpClient 不解释书籍和目录。图片下载沿用独立链路。
 
 ## 分页会话
 
@@ -69,8 +70,14 @@ MetadataStore 的三个索引各保留最多 256 项：成功详情按书籍 ID�
 | 首页四个栏目 | 先限制展示行和每行书籍数量，再记录实际返回给宿主的展示摘要 |
 | 搜索列表、展开分页 | 沿用已解析有效摘要的记录规则；分页结果去重不影响摘要记录 |
 | 仅检索 ID 的直达与重定向 | 返回 ID，保留轻量路径，不额外抓取详情 |
-| 详情失败或解析无效 | 依次尝试成功详情、列表摘要、宿主空对象 |
+| 普通详情失败或解析无效 | 依次尝试成功详情、列表摘要、宿主空对象 |
 | 关联索引缺失 | 已登记定义保留原 URL；首次登记且无已知目标时回退到关键词搜索 |
+
+`LinovelibBookDetails` 替代原 SearchDetails，提供三个内部操作：`fetch(id)` 始终获取实时 HTML 并复用 `acceptHtml(id, html)`；后者只解析已有响应，标题非空才接纳详情与关联目标；`enrich(books)` 先发完全部首批数据，再按顺序逐本实时补全。搜索首批取成功详情或本次列表的书目摘要，不使用 Store 中的旧摘要替换本次摘要。命中成功详情也不跳过实时补全。
+
+`fetch` 与 `acceptHtml` 对无效页面返回空结果，异常原样传播；普通详情、ID 直达和重定向的宿主转换仍在各自原有异常处理内，分别保留普通缓存回退或 SingleBook 退路。`enrich` 只处理逐本获取失败，继续后续书籍；取消和收集方异常向上传播。ID-only 路径不调用详情操作；搜索事件与同一可变对象更新继续由 SearchProvider 处理。
+
+WebDataSource 装配同一个 BookDetails 和 MetadataStore 供普通详情与搜索使用，公开的 Context 构造保留。内部装配允许替换详情 HTML 加载函数，以固定页面验证实际宿主入口；生产仍使用原 HTTP 会话，不新增重试、并发、请求合并或缓存规则。
 
 新的有效详情缺少某链接时，不抹掉先前已知目标。同名标签受 API 3 只传展示文本的限制，采用最近有效解析到的关联。
 

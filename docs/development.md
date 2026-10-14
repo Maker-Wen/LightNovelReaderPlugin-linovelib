@@ -71,7 +71,7 @@ python3 scripts/run-host-tests.py --serial emulator-5556 --no-build
 - 分页：`LinovelibExplorePageProviderTest`、`LinovelibPaginationSessionTest`、`LinovelibRelatedSearchTest`。
 - 列表页识别：`LinovelibListPageTest` 覆盖统一解析结果、分页信息，以及搜索和展开页的共同识别约定；栏目投影由 `LinovelibMetadataFlowHostTest` 覆盖。
 - HTTP：`LinovelibHttpClientTest`、`LinovelibHttpClientRequestTest`、`LinovelibChapterHttpTest`、`LinovelibChapterRedirectTest`。
-- 元数据与映射：`LinovelibMetadataStoreTest`、`LinovelibMetadataFlowTest`、`LinovelibSearchDetailsTest`、`LinovelibBookMappingHostTest`、`LinovelibMetadataFlowHostTest`。
+- 元数据与映射：`LinovelibMetadataStoreTest`、`LinovelibMetadataFlowTest`、`LinovelibBookDetailsTest`、`LinovelibBookDetailsHostTest`、`LinovelibBookMappingHostTest`、`LinovelibMetadataFlowHostTest`。
 - 迁入：`migration` 测试包及 `plugin/src/test/resources/migration/` 中的快照夹具。
 
 测试源码统一位于 [plugin/src/test](../plugin/src/test)。有日期的执行结果见 [文档索引中的历史记录](README.md#历史记录)，不以测试声明数量代替执行结果。
