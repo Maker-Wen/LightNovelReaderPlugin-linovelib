@@ -57,7 +57,7 @@ class LinovelibHtmlParserTest {
         val html = (1..40).joinToString(prefix = "<ol class=\"book-ol\">", postfix = "</ol>") { id ->
             "<li class=\"book-li\"><a class=\"book-layout\" href=\"/novel/$id.html\"><h4 class=\"book-title\">Book $id</h4></a></li>"
         }
-        val row = parser.parseListRow("Search", html)
+        val row = requireNotNull(parser.parseListPage(html))
         assertEquals((1..40).map(Int::toString), row.books.map { it.id })
     }
 
@@ -367,8 +367,7 @@ class LinovelibHtmlParserTest {
                 <div id="acontent"><p>正文內容与原文</p></div>
             """.trimIndent()
         )
-        val searchRow = parser.parseListRow(
-            "Search",
+        val searchRow = requireNotNull(parser.parseListPage(
             """
                 <ol class="book-ol"><li class="book-li">
                   <a class="book-layout" href="/novel/10.html">
@@ -377,7 +376,7 @@ class LinovelibHtmlParserTest {
                   </a>
                 </li></ol>
             """.trimIndent()
-        )
+        ))
 
         assertEquals("章節标题", chapter.title)
         assertEquals(
@@ -509,7 +508,7 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseListRowReadsCompleteBookList() {
+    fun parseListPageReadsCompleteBookList() {
         val html = """
             <ol class="book-ol">
               <li class="book-li">
@@ -522,9 +521,8 @@ class LinovelibHtmlParserTest {
             </ol>
         """.trimIndent()
 
-        val row = parser.parseListRow("Complete", html)
+        val row = requireNotNull(parser.parseListPage(html))
 
-        assertEquals("Complete", row.title)
         assertEquals(
             listOf(ParsedExploreBook("20", "Complete Book", "Writer", "https://www.bilinovel.net/files/article/image/0/20/20s.jpg")),
             row.books
@@ -532,7 +530,7 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseListRowUsesImageAltWhenVisibleTitleIsTruncated() {
+    fun parseListPageUsesImageAltWhenVisibleTitleIsTruncated() {
         val html = """
             <ol class="book-ol">
               <li class="book-li">
@@ -544,7 +542,7 @@ class LinovelibHtmlParserTest {
             </ol>
         """.trimIndent()
 
-        val row = parser.parseListRow("Wenku", html)
+        val row = requireNotNull(parser.parseListPage(html))
 
         assertEquals("Very Long Complete Book Title", row.books.single().title)
     }

@@ -59,6 +59,11 @@ data class ParsedExploreBook(
     val coverUrl: String
 )
 
+data class ParsedListPage(
+    val books: List<ParsedExploreBook>,
+    val lastPage: Int
+)
+
 sealed class ParsedContentBlock {
     data class Text(val text: String) : ParsedContentBlock()
     data class Image(val url: String) : ParsedContentBlock()
@@ -239,12 +244,18 @@ class LinovelibHtmlParser(
             }
     }
 
-    fun parseListRow(title: String, html: String): ParsedExploreRow {
+    /** Null means unrecognized; an empty book list means a recognized empty page. */
+    fun parseListPage(html: String): ParsedListPage? {
         val document = Jsoup.parse(html, host)
         val books = document.select("ol.book-ol .book-li a.book-layout[href], a.book-layout[href]")
             .mapNotNull(::parseExploreBook)
             .distinctBy { it.id }
-        return ParsedExploreRow(title, books)
+        if (books.isEmpty()) {
+            val list = document.selectFirst("ol.book-ol") ?: return null
+            // Candidate rows without usable book information are not an empty result.
+            if (list.select(".book-li, a[href*=/novel/]").isNotEmpty()) return null
+        }
+        return ParsedListPage(books, parseLastPage(document))
     }
 
     private fun expandedListUrl(element: Element, selector: String): String? = element.select(selector)
@@ -257,8 +268,7 @@ class LinovelibHtmlParser(
         }
         ?.toString()
 
-    fun parseLastPage(html: String): Int {
-        val document = Jsoup.parse(html, host)
+    private fun parseLastPage(document: Element): Int {
         document.selectFirst("#pagelink a.last")
             ?.text()
             ?.toIntOrNull()

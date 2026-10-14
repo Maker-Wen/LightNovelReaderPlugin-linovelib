@@ -64,18 +64,18 @@ internal class LinovelibLinkedExpandedPageDataSource(
                     emit(SearchResult.End())
                     return@flow
                 }
-                if (currentPage == 1) {
-                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else parser.parseLastPage(html)
-                }
-                val parsedBooks = parser.parseListRow(displayTag, html).books
+                val page = parser.parseListPage(html)
                 context.ensureActive()
-                metadata.rememberBooks(parsedBooks)
-                if (parsedBooks.isEmpty() && !LinovelibSearchResponse(firstPageUrl, html).hasEmptyResultList()) {
+                if (page == null) {
                     emit(SearchResult.Error("未能识别书单页面，请稍后重试"))
                     emit(SearchResult.End())
                     return@flow
                 }
-                val books = parsedBooks.filter { emittedBookIds.add(it.id) }
+                if (currentPage == 1) {
+                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else page.lastPage
+                }
+                metadata.rememberBooks(page.books)
+                val books = page.books.filter { emittedBookIds.add(it.id) }
                 books.forEach { emit(SearchResult.SingleBook(it.id)) }
                 if (currentPage == 1 && books.isEmpty()) break
                 if (currentPage >= lastPage) break

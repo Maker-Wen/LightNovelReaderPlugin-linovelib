@@ -104,10 +104,9 @@ internal class LinovelibSearchProvider(
             return@flow
         }
 
-        val searchRow = parser.parseListRow("Search", searchResponse.html)
-        metadata.rememberBooks(searchRow.books)
-
-        val books = searchRow.books.distinctBy { it.id }
+        val page = parser.parseListPage(searchResponse.html)
+        val books = page?.books.orEmpty()
+        metadata.rememberBooks(books)
         diagnostics.info(
             "SEARCH_SOURCE",
             linkedMapOf(
@@ -118,7 +117,7 @@ internal class LinovelibSearchProvider(
         )
         if (books.isEmpty()) {
             emit(
-                if (searchResponse.hasEmptyResultList()) SearchResult.Empty()
+                if (page != null) SearchResult.Empty()
                 else SearchResult.Error("无法识别 Linovelib 搜索结果，请稍后重试")
             )
         } else if (!loadDetails) {

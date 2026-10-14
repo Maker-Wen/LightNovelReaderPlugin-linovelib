@@ -15,10 +15,9 @@ class LinovelibCoverUrlTest {
             "1804",
             """<h1 class="book-title">Book</h1><meta property="og:image" content="$cover">"""
         )
-        val list = parser.parseListRow(
-            "Books",
+        val list = requireNotNull(parser.parseListPage(
             """<a class="book-layout" href="/novel/1804.html"><img data-src="$cover" alt="Book"></a>"""
-        )
+        ))
 
         assertEquals(cover, detail.coverUrl)
         assertEquals(cover, list.books.single().coverUrl)

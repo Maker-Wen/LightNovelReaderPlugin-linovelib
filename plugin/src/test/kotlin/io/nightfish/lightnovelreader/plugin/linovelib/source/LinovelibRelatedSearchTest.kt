@@ -14,6 +14,82 @@ import org.junit.Test
 
 class LinovelibRelatedSearchTest {
     @Test
+    fun emptyMiddlePagesContinueUsingTheFirstPagesLastPage() = runBlocking {
+        val requested = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            "Books", LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", 1),
+            htmlLoader = { url ->
+                requested += url
+                when (requested.size) {
+                    1 -> linkedListHtml("1", 3)
+                    2 -> linkedListHtml(null, 1)
+                    else -> linkedListHtml("2", 1)
+                }
+            }, parser = LinovelibHtmlParser()
+        )
+
+        val results = withTimeout(1_000) {
+            val collection = async { page.getResultFlow().toList() }
+            while (requested.isEmpty()) yield()
+            page.loadMore()
+            collection.await()
+        }
+
+        assertEquals((1..3).map { LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", it) }, requested)
+        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertTrue(results.none { it is SearchResult.Empty || it is SearchResult.Error })
+        assertTrue(results.last() is SearchResult.End)
+    }
+
+    @Test
+    fun laterPageMetadataDoesNotExtendTheFirstPagesLastPage() = runBlocking {
+        val requested = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            "Books", LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", 1),
+            htmlLoader = { url ->
+                requested += url
+                linkedListHtml(requested.size.toString(), if (requested.size == 1) 2 else 9)
+            }, parser = LinovelibHtmlParser()
+        )
+
+        val results = withTimeout(1_000) {
+            val collection = async { page.getResultFlow().toList() }
+            while (requested.isEmpty()) yield()
+            page.loadMore()
+            collection.await()
+        }
+
+        assertEquals((1..2).map { LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", it) }, requested)
+        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertTrue(results.last() is SearchResult.End)
+    }
+
+    @Test
+    fun nonPaginatedTargetsIgnoreThePagesPaginationHint() = runBlocking {
+        val target = LinovelibUrls.HOST + "/tag/1.html"
+        val requested = mutableListOf<String>()
+        val page = LinovelibLinkedExpandedPageDataSource(
+            "Books", target,
+            htmlLoader = { requested += it; linkedListHtml("1", 20) },
+            parser = LinovelibHtmlParser()
+        )
+
+        val results = withTimeout(1_000) { page.getResultFlow().toList() }
+
+        assertEquals(listOf(target), requested)
+        assertEquals(listOf("1"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertTrue(results.last() is SearchResult.End)
+    }
+
+    private fun linkedListHtml(bookId: String?, lastPage: Int): String {
+        val books = if (bookId == null) "" else """
+            <li class="book-li"><a class="book-layout" href="/novel/$bookId.html">
+            <span class="book-title">Book $bookId</span></a></li>
+        """
+        return """<div id="pagelink"><a class="last">$lastPage</a></div><ol class="book-ol">$books</ol>"""
+    }
+
+    @Test
     fun `related fallback returns distinct ids without fetching details`() = runBlocking {
         val keywords = mutableListOf<String>()
         val details = mutableListOf<String>()

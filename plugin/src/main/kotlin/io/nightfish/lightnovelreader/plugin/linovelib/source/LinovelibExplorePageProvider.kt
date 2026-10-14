@@ -39,7 +39,7 @@ class LinovelibExplorePageProvider internal constructor(
             displayRows(parser.parseExploreRows(htmlLoader(host)))
         })
         registerTapPage(LinovelibRowsExploreTapPage("文库") {
-            val row = parser.parseListRow("全部轻小说", htmlLoader(wenkuUrl))
+            val row = ParsedExploreRow("全部轻小说", parser.parseListPage(htmlLoader(wenkuUrl))?.books.orEmpty())
             listOf(displayRow(row, WENKU_PAGE_ID))
         })
         registerTapPage(LinovelibRowsExploreTapPage("排行") {
@@ -47,7 +47,8 @@ class LinovelibExplorePageProvider internal constructor(
         })
         registerTapPage(LinovelibRowsExploreTapPage("完结") {
             val url = LinovelibUrls.complete(host)
-            listOf(displayRow(parser.parseListRow("完结轻小说", htmlLoader(url)).copy(expandedUrl = url)))
+            val row = ParsedExploreRow("完结轻小说", parser.parseListPage(htmlLoader(url))?.books.orEmpty(), expandedUrl = url)
+            listOf(displayRow(row))
         })
     }
 

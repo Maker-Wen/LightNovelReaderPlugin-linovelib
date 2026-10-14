@@ -11,6 +11,27 @@ import java.time.LocalDateTime
 
 class LinovelibMetadataFlowHostTest {
     @Test
+    fun wenkuAndCompleteKeepEmptyDisplayRowsAndExpandedEntries() = runBlocking {
+        listOf(
+            """<ol class="book-ol"></ol>""",
+            "<html>Access denied</html>",
+            """<ol class="book-ol"><li class="book-li">Invalid book</li></ol>"""
+        ).forEach { html ->
+            val provider = exploreProvider(html, LinovelibMetadataStore())
+            listOf("文库" to "全部轻小说", "完结" to "完结轻小说").forEach { (tab, title) ->
+                val emissions = provider.exploreTapPageDataSourceMap.values.single { it.title == tab }
+                    .getRowsFlow().toList()
+                assertTrue(emissions.first().isEmpty())
+                val row = emissions.last().single()
+                assertEquals(title, row.title)
+                assertTrue(row.bookList.isEmpty())
+                assertTrue(row.expandable)
+                assertNotNull(provider.exploreExpandedPageDataSourceMap[row.expandedPageDataSourceId])
+            }
+        }
+    }
+
+    @Test
     fun allExploreTabsRecordOnlyDisplayedSummariesWithoutHiddenBooksEvictingThem() = runBlocking {
         val links = (1..300).joinToString("") { row(it) }
         listOf("推荐", "文库", "排行", "完结").forEach { title ->

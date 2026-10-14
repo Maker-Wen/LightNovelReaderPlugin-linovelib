@@ -2,7 +2,7 @@
 
 [文档索引](README.md) · [开发与验证](development.md) · [TW 数据迁入](tw-data-migration.md)
 
-本说明以 `e1ad8de`（2026-10-13）的三项架构改造为基础，并包含同日的首页展示摘要调整。分页会话隔离、HTTP 会话抽离、Parser 与临时元数据拆分均已实现。方案取舍保留在 [历史设计](archive/2026-09-25-linovelib-architecture-design.md)，验证范围见 [改造验证记录](archive/2026-10-13-architecture-validation.md)。
+本说明以 `e1ad8de`（2026-10-13）的三项架构改造为基础，并包含同日的首页展示摘要调整及 2026-10-14 的统一列表页识别。分页会话隔离、HTTP 会话抽离、Parser 与临时元数据拆分均已实现。方案取舍保留在 [历史设计](archive/2026-09-25-linovelib-architecture-design.md)，前三项的验证范围见 [改造验证记录](archive/2026-10-13-architecture-validation.md)。
 
 ## 模块与入口
 
@@ -38,7 +38,7 @@ Map getter 的成本是 O(已登记定义数)，但只创建轻量对象。同�
 
 ## HTTP 会话与离线状态
 
-`LinovelibHttpClient` 对外提供 `loadHtml`、`loadChapterPage`、`search`、`checkOffline` 和只读 `isOffLineFlow`。章节与搜索返回最终 URL 和 HTML；搜索页面识别保留在 `LinovelibSearchResponse`。
+`LinovelibHttpClient` 对外提供 `loadHtml`、`loadChapterPage`、`search`、`checkOffline` 和只读 `isOffLineFlow`。章节与搜索返回最终 URL 和 HTML；搜索直达书籍与重定向识别保留在 `LinovelibSearchResponse`，列表页识别由 Parser 统一处理。
 
 [RequestPolicy](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRequestPolicy.kt) 定义重试和退避，[RequestCoordinator](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRequestCoordinator.kt) 负责串行请求、间隔、冷却和取消释放。Cookie 合并、连接执行与写回在同一个请求执行区间内完成。搜索维持 JS、CSS、ticket 兑换、结果请求四步验证及其显式 Cookie 边界。
 
@@ -54,6 +54,10 @@ Map getter 的成本是 O(已登记定义数)，但只创建轻量对象。同�
 ## 解析、元数据与映射
 
 Parser 返回原始作者、作者 URL、标签和出版社链接，不生成作者展示标签，也不隐式写缓存。探索解析保留当前 HTML 中全部有效行与书籍，按原顺序过滤无效项并在每行内按书籍 ID 去重；不承担显示限额。正文选择器、段落还原、日期解析和目录算法保持独立。
+
+列表页由 `parseListPage(html)` 一次解析同一份 DOM，返回 `ParsedListPage?`，包含完整书目摘要和末页。解析到有效书目时按书籍 ID 保留第一条有效摘要，顺序与网页一致；没有有效书目时，只有明确为空的列表才返回空书目，验证页、未知页面和损坏书目候选返回 `null`。书目、空列表及末页识别共用这一入口，不向调用方暴露独立的空页或末页判定方法。
+
+搜索与展开页把有效空列表和未识别页面分别映射为已有的 Empty 与 Error 结果。展开页仍使用第一页的末页信息；分页 URL、筛选、跨页去重和加载更多属于页面会话，空的中间页可继续向后扫描。文库和完结栏目将有效空列表或未识别页面投影为空展示行，继续保留栏目标题与展开入口。
 
 首页四个栏目由 ExplorePageProvider 生成展示结果：推荐、排行取前 8 个有效行，每行最多 12 本；文库、完结沿用单行展示，每行最多 12 本。只将这些实际返回给宿主的书目摘要写入 MetadataStore，一次展示转换中每个位置只写一次；未展示的书籍或行不新增、覆盖或刷新摘要，也不登记隐藏行的展开页。固定文库定义和可见行的既有展开页 ID 规则保持。首页 fallback 同样使用每行 12 本的展示限额。
 
