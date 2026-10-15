@@ -9,13 +9,6 @@
 [![Release](https://img.shields.io/github/v/release/Maker-Wen/LightNovelReaderPlugin-linovelib?include_prereleases&label=release)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 [![Downloads](https://img.shields.io/github/downloads/Maker-Wen/LightNovelReaderPlugin-linovelib/total?label=downloads)](https://github.com/Maker-Wen/LightNovelReaderPlugin-linovelib/releases)
 
-## 文档入口
-
-- [文档索引](docs/README.md)：按开发任务选择当前说明。
-- [当前架构](docs/architecture.md)：模块职责、分页会话、网络会话与临时元数据。
-- [开发与验证](docs/development.md)：构建、JVM 测试、Android 宿主测试和发布流程。
-- [TW 数据迁入](docs/tw-data-migration.md)：触发条件、合并规则与数据边界。
-
 ## 功能
 
 - 推荐、文库、排行、完结四个栏目，以及实际书单的更多入口。
@@ -57,10 +50,7 @@
 | --- | --- |
 | 主题筛选 | 61 个主题选项超出不可滚动弹窗，部分选项和确认操作不可达；地区等较短选项可用 |
 | 作者与标签导航 | 宿主混淆后的回调描述符与插件不匹配，点击可能无法进入关联页 |
-| 连续滚动下切章 | 曾出现已加载下一章但界面仍停留旧章的现象，根因未确定 |
 | 出版社关联入口 | 当前映射保留出版社字段，未额外生成出版社标签；旧 API 3 宿主 `30458c` 的原生出版社点击回调为空，因此可能只展示而不能进入书单。这是曾暂缓处理的问题，尚无最新组合的独立设备复测 |
-
-展开页刷新和错误展示还受实际宿主的调用契约约束，分别见 [分页会话](docs/architecture.md#分页会话) 与 [解析、元数据与映射](docs/architecture.md#解析元数据与映射)。插件重构与当前验收范围见 [开发与验证](docs/development.md#已知验证边界)；宿主界面问题需按实际版本验收。
 
 ## 致谢
 
