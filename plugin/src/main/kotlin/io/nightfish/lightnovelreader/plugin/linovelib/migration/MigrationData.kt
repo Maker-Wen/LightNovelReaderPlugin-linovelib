@@ -11,6 +11,7 @@ internal data class MigrationPlan(
     val snapshot: MigrationSnapshot,
     val twFingerprint: String,
     val bookCount: Int,
+    val hasRecoverableData: Boolean = true,
 )
 
 internal class MigrationValidationException(message: String) : IllegalArgumentException(message)

@@ -54,6 +54,7 @@ internal class Api3HostAdapter(
     private lateinit var room: Any
     private lateinit var localDataManager: Any
     private lateinit var sourcePaths: Set<String>
+    private val currentSqlRows = mutableMapOf<String, MutableMap<JsonObject, ContentValues>>()
 
     /** Enable writes only when the host exposes the verified shared API 3 storage contract. */
     private fun initialize(): Boolean {
@@ -106,9 +107,13 @@ internal class Api3HostAdapter(
             val source = selectedSource()
             when {
                 source !in setOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID) -> MigrationLoadResult.Disabled
-                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null -> MigrationLoadResult.Disabled
-                source == MigrationData.TW_SOURCE_ID || snapshotFile(MigrationData.TW_SOURCE_ID).isFile || snapshotFile(-1).isFile ->
-                    MigrationLoadResult.Candidate
+                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != MigrationReceiptStatus.Absent -> MigrationLoadResult.Disabled
+                source == MigrationData.TW_SOURCE_ID -> if (planner.hasRecoverableData(readActive(source)))
+                    MigrationLoadResult.Candidate else MigrationLoadResult.Disabled
+                source == MigrationData.CURRENT_SOURCE_ID -> {
+                    val tw = codec.readTwSource(snapshotFile(MigrationData.TW_SOURCE_ID), snapshotFile(-1))?.snapshot
+                    if (tw != null && planner.hasRecoverableData(tw)) MigrationLoadResult.Candidate else MigrationLoadResult.Disabled
+                }
                 else -> MigrationLoadResult.Disabled
             }
         }
@@ -140,46 +145,48 @@ internal class Api3HostAdapter(
             if (selectedSource() != source) throw SourceChanged()
             readActive(source)
         }
-        if (source == MigrationData.CURRENT_SOURCE_ID && receipt(active) != null) {
-            return Prepared.Finished(MigrationAttemptResult.Completed)
+        if (source == MigrationData.CURRENT_SOURCE_ID) {
+            when (migrationReceiptStatus(active)) {
+                MigrationReceiptStatus.Present -> return Prepared.Finished(MigrationAttemptResult.Completed)
+                MigrationReceiptStatus.Untrusted -> return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.UntrustedCompletion))
+                MigrationReceiptStatus.Absent -> Unit
+            }
         }
         val stamps = listOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID, -1).associate { id ->
             snapshotFile(id).let { it to if (it.isFile) MigrationSnapshotCodec.digest(it) else null }
         }
         val inactiveId = if (source == MigrationData.CURRENT_SOURCE_ID) MigrationData.TW_SOURCE_ID else MigrationData.CURRENT_SOURCE_ID
         val inactiveFile = snapshotFile(inactiveId)
-        val inactive = if (inactiveFile.exists()) codec.read(inactiveFile, inactiveId).snapshot else MigrationData.emptySnapshot(inactiveId)
-        if (inactiveId == MigrationData.CURRENT_SOURCE_ID && receipt(inactive) != null) {
-            return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.TargetAlreadyMigratedInactive))
+        val inactive = when {
+            inactiveId == MigrationData.TW_SOURCE_ID -> codec.readTwSource(inactiveFile, snapshotFile(-1))?.snapshot
+                ?: return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.NoData))
+            inactiveFile.exists() -> codec.read(inactiveFile, inactiveId).snapshot
+            else -> MigrationData.emptySnapshot(inactiveId)
+        }
+        if (inactiveId == MigrationData.CURRENT_SOURCE_ID) when (migrationReceiptStatus(inactive)) {
+            MigrationReceiptStatus.Present -> return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.TargetAlreadyMigratedInactive))
+            MigrationReceiptStatus.Untrusted -> return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.UntrustedCompletion))
+            MigrationReceiptStatus.Absent -> Unit
         }
         val current = if (source == MigrationData.CURRENT_SOURCE_ID) active else inactive
-        var tw = if (source == MigrationData.TW_SOURCE_ID) active else inactive
-        if (source == MigrationData.CURRENT_SOURCE_ID && snapshotFile(-1).exists()) {
-            val alias = codec.read(snapshotFile(-1), -1).snapshot
-            if (inactiveFile.exists()) require(planner.personalFingerprint(tw) == planner.personalFingerprint(alias)) {
-                "TW 与 -1 快照无法证明属于同一份个人数据"
-            } else tw = alias
-        }
-        if (MigrationData.TABLES.all { tw.data.getValue(it).jsonArray.isEmpty() }) {
+        val tw = if (source == MigrationData.TW_SOURCE_ID) active else inactive
+        if (!planner.plan(current, tw).hasRecoverableData) {
             return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.NoData))
         }
-        planner.validate(current)
-        planner.validate(tw)
-        planner.plan(current, tw)
         checkSnapshotStamps(stamps)
         return Prepared.Ready(Preparation(source, current, tw, stamps))
     }
 
     /** The caller reads source and receipt within the same transaction. */
-    private fun activeReceipt(): JsonObject? {
+    private fun activeReceipt(): MigrationReceiptStatus {
         val row = database.rawQuery("SELECT path,`group`,type,value FROM user_data WHERE path=?", arrayOf(RECEIPT_PATH)).use { cursor ->
-            if (!cursor.moveToFirst()) return null
+            if (!cursor.moveToFirst()) return MigrationReceiptStatus.Absent
             JsonObject(listOf("path", "group", "type", "value").associateWith { name ->
                 JsonPrimitive(cursor.getString(cursor.getColumnIndexOrThrow(name)))
             })
         }
         val empty = MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID)
-        return receipt(MigrationSnapshot(empty.sourceId, JsonObject(empty.data + ("userDataEntities" to JsonArray(listOf(row))))))
+        return migrationReceiptStatus(MigrationSnapshot(empty.sourceId, JsonObject(empty.data + ("userDataEntities" to JsonArray(listOf(row))))))
     }
 
     private fun commit(prepared: Preparation, admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult {
@@ -187,6 +194,7 @@ internal class Api3HostAdapter(
         var markedSuccessful = false
         var ended = false
         var failure: Exception? = null
+        var skipped: MigrationAttemptResult.NoWork? = null
         try {
             assertStorageIdentity()
             check(!database.inTransaction()) { "迁入线程已有未结算事务" }
@@ -194,10 +202,13 @@ internal class Api3HostAdapter(
             database.beginTransaction()
             began = true
             val source = selectedSource()
-            if (source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null) {
+            val completion = if (source == MigrationData.CURRENT_SOURCE_ID) activeReceipt() else MigrationReceiptStatus.Absent
+            if (completion == MigrationReceiptStatus.Present) {
                 // No second write when a receipt was committed since preflight.
                 database.setTransactionSuccessful()
                 markedSuccessful = true
+            } else if (completion == MigrationReceiptStatus.Untrusted) {
+                skipped = MigrationAttemptResult.NoWork(MigrationReason.UntrustedCompletion)
             } else {
                 if (source != prepared.activeSourceId) throw SourceChanged()
                 val active = readActive(prepared.activeSourceId)
@@ -208,22 +219,24 @@ internal class Api3HostAdapter(
                 val plan = planner.plan(current, tw) { done, count ->
                     onProgress(MigrationProgress(if (count > 0 && done == count) MigrationStage.Saving else MigrationStage.Merging, done, count))
                 }
-                onProgress(MigrationProgress(MigrationStage.Saving, plan.bookCount, plan.bookCount))
-                writeSnapshot(plan.snapshot)
-                writeUserData(SOURCE_PATH, "Int", MigrationData.CURRENT_SOURCE_ID.toString())
-                writeUserData(RECEIPT_PATH, "String", buildJsonObject {
-                    put("kind", "linovelib_tw_once")
-                    put("ruleVersion", 1)
-                    put("sourceId", MigrationData.TW_SOURCE_ID)
-                    put("targetId", MigrationData.CURRENT_SOURCE_ID)
-                    put("personalFingerprint", plan.twFingerprint)
-                    put("commitId", UUID.randomUUID().toString())
-                }.toString())
-                // Never wait for the main thread while holding the transaction. No callbacks or
-                // extra business work may be inserted between this check and marking success.
-                admissionCheck()
-                database.setTransactionSuccessful()
-                markedSuccessful = true
+                if (!plan.hasRecoverableData) skipped = MigrationAttemptResult.NoWork(MigrationReason.NoData) else {
+                    onProgress(MigrationProgress(MigrationStage.Saving, plan.bookCount, plan.bookCount))
+                    writeSnapshot(plan.snapshot, prepared.activeSourceId == MigrationData.CURRENT_SOURCE_ID)
+                    writeUserData(SOURCE_PATH, "Int", MigrationData.CURRENT_SOURCE_ID.toString())
+                    writeUserData(RECEIPT_PATH, "String", buildJsonObject {
+                        put("kind", "linovelib_tw_once")
+                        put("ruleVersion", 1)
+                        put("sourceId", MigrationData.TW_SOURCE_ID)
+                        put("targetId", MigrationData.CURRENT_SOURCE_ID)
+                        put("personalFingerprint", plan.twFingerprint)
+                        put("commitId", UUID.randomUUID().toString())
+                    }.toString())
+                    // Never wait for the main thread while holding the transaction. No callbacks or
+                    // extra business work may be inserted between this check and marking success.
+                    admissionCheck()
+                    database.setTransactionSuccessful()
+                    markedSuccessful = true
+                }
             }
         } catch (error: Exception) {
             failure = error
@@ -237,7 +250,7 @@ internal class Api3HostAdapter(
                 }
             }
         }
-        val error = failure ?: return MigrationAttemptResult.Completed
+        val error = failure ?: return skipped ?: MigrationAttemptResult.Completed
         Log.e("LinovelibMigration", "Migration transaction did not return normally", error)
         val exit = when {
             !began -> MigrationTransactionExit.NotStarted
@@ -259,8 +272,8 @@ internal class Api3HostAdapter(
         if (database.inTransaction()) MigrationCompletion.Unknown else inTransaction {
             val source = selectedSource()
             when {
-                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != null -> MigrationCompletion.Present
-                source == originalSource && activeReceipt() == null -> MigrationCompletion.Absent
+                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() == MigrationReceiptStatus.Present -> MigrationCompletion.Present
+                source == originalSource && activeReceipt() == MigrationReceiptStatus.Absent -> MigrationCompletion.Absent
                 else -> MigrationCompletion.Unknown
             }
         }
@@ -311,13 +324,33 @@ internal class Api3HostAdapter(
     }
 
     private fun readActive(sourceId: Int): MigrationSnapshot {
+        if (sourceId == MigrationData.CURRENT_SOURCE_ID) currentSqlRows.clear()
         val result = linkedMapOf<String, JsonElement>("webBookDataSourceId" to JsonPrimitive(sourceId))
         TABLES.forEach { table ->
             val rows = mutableListOf<JsonElement>()
             database.rawQuery("SELECT * FROM ${table.name}", null).use { cursor ->
                 while (cursor.moveToNext()) {
                     if (table.name == "user_data" && cursor.getString(cursor.getColumnIndexOrThrow("path")) !in sourcePaths) continue
-                    rows += JsonObject(table.columns.associate { column -> column.field to readValue(cursor, column) })
+                    val row = JsonObject(table.columns.associate { column ->
+                        column.field to try { readValue(cursor, column) } catch (_: Exception) { JsonNull }
+                    })
+                    if (sourceId == MigrationData.CURRENT_SOURCE_ID) {
+                        val raw = ContentValues()
+                        table.columns.forEach { column ->
+                            val index = cursor.getColumnIndexOrThrow(column.column)
+                            when (cursor.getType(index)) {
+                                Cursor.FIELD_TYPE_NULL -> raw.putNull(column.column)
+                                Cursor.FIELD_TYPE_INTEGER -> raw.put(column.column, cursor.getLong(index))
+                                Cursor.FIELD_TYPE_FLOAT -> raw.put(column.column, cursor.getDouble(index))
+                                Cursor.FIELD_TYPE_STRING -> raw.put(column.column, cursor.getString(index))
+                                Cursor.FIELD_TYPE_BLOB -> raw.put(column.column, cursor.getBlob(index))
+                            }
+                        }
+                        require(currentSqlRows.getOrPut(table.field) { linkedMapOf() }.put(row, raw) == null) {
+                            "当前源存在无法区分的原始记录"
+                        }
+                    }
+                    rows += row
                 }
             }
             result[table.field] = JsonArray(rows)
@@ -325,13 +358,15 @@ internal class Api3HostAdapter(
         return MigrationSnapshot(sourceId, JsonObject(result))
     }
 
-    private fun writeSnapshot(snapshot: MigrationSnapshot) {
+    private fun writeSnapshot(snapshot: MigrationSnapshot, preserveCurrentSql: Boolean) {
         TABLES.filter { it.name != "user_data" }.forEach { table ->
             database.delete(table.name, null, null)
             snapshot.data.getValue(table.field).jsonArray.forEach { item ->
                 val row = item.jsonObject
-                val values = ContentValues()
-                table.columns.forEach { column -> writeValue(values, column, row[column.field]) }
+                val original = if (preserveCurrentSql) currentSqlRows[table.field]?.get(row) else null
+                val values = original ?: ContentValues().also { values ->
+                    table.columns.forEach { column -> writeValue(values, column, row[column.field]) }
+                }
                 insert(table.name, values)
             }
         }
@@ -341,27 +376,11 @@ internal class Api3HostAdapter(
             val path = row.getValue("path").jsonPrimitive.content
             require(path in sourcePaths) { "快照含未登记的源偏好：$path" }
             if (path == SOURCE_PATH || path == RECEIPT_PATH) return@forEach
-            insert("user_data", ContentValues().apply {
+            val original = if (preserveCurrentSql) currentSqlRows["userDataEntities"]?.get(row) else null
+            insert("user_data", original ?: ContentValues().apply {
                 listOf("path", "group", "type", "value").forEach { put(it, row.getValue(it).jsonPrimitive.content) }
             })
         }
-    }
-
-    private fun receipt(snapshot: MigrationSnapshot): JsonObject? {
-        val rows = snapshot.data.getValue("userDataEntities").jsonArray.map { it.jsonObject }.filter {
-            it["path"]?.jsonPrimitive?.content == RECEIPT_PATH
-        }
-        require(rows.size <= 1) { "迁入完成凭据重复" }
-        if (rows.isEmpty()) return null
-        val row = rows.single()
-        require(row.getValue("type").jsonPrimitive.content == "String") { "迁入完成凭据类型无效" }
-        val value = Json.parseToJsonElement(row.getValue("value").jsonPrimitive.content).jsonObject
-        require(value["kind"]?.jsonPrimitive?.content == "linovelib_tw_once" &&
-            value["ruleVersion"]?.jsonPrimitive?.int == 1 && value["sourceId"]?.jsonPrimitive?.int == MigrationData.TW_SOURCE_ID &&
-            value["targetId"]?.jsonPrimitive?.int == MigrationData.CURRENT_SOURCE_ID &&
-            value["personalFingerprint"]?.jsonPrimitive?.content?.matches(Regex("[0-9a-f]{64}")) == true &&
-            !value["commitId"]?.jsonPrimitive?.content.isNullOrBlank()) { "迁入完成凭据无效" }
-        return value
     }
 
     private fun writeUserData(path: String, type: String, value: String) {

@@ -13,7 +13,8 @@ internal sealed interface MigrationLoadResult {
 
 internal enum class MigrationReason {
     NotReady, StartupConflict, SessionChanged, DisplayUnavailable, SchedulingFailure,
-    NoData, SourceChanged, InputChanged, TargetAlreadyMigratedInactive, InvalidData, UnsupportedHost, StorageFailure,
+    NoData, SourceChanged, InputChanged, TargetAlreadyMigratedInactive, UntrustedCompletion,
+    InvalidData, UnsupportedHost, StorageFailure,
 }
 
 internal class MigrationAdmissionException(val reason: MigrationReason, val retryable: Boolean) :

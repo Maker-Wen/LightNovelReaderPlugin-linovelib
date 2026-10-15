@@ -171,7 +171,7 @@ internal class LinovelibMigrationController(
                 .setTitle("合并 TW 数据")
                 .setMessage(
                     "检测到 Linovelib TW 的本地数据，是否合并到当前 Linovelib？\n\n" +
-                        "书架、阅读记录和阅读时长将一并合并。书籍资料、目录和正文缓存优先保留当前 Linovelib 已有的数据。\n\n" +
+                        "将迁入可恢复的书架、阅读记录和阅读时长。书籍资料、目录和正文缓存优先保留当前 Linovelib 的有效数据。\n\n" +
                         "完成后请重新打开阅读器。"
                 )
                 .setPositiveButton("开始同步") { _, _ -> session.start() }
@@ -192,23 +192,23 @@ internal class LinovelibMigrationController(
             }
             MigrationState.Completed -> builder
                 .setTitle("同步已完成")
-                .setMessage("数据已保存。请重新打开阅读器，加载合并后的数据。")
+                .setMessage(MigrationMessages.completed)
                 .setCancelable(false)
                 .setPositiveButton("关闭阅读器") { _, _ -> closeReader(target) }
             MigrationState.RestartRequired -> builder
                 .setTitle("保存结果待确认")
-                .setMessage("暂时无法确认本次保存结果。为避免重复合并，请关闭并重新打开阅读器后再检查。")
+                .setMessage(MigrationMessages.restartRequired)
                 .setCancelable(false)
                 .setPositiveButton("关闭阅读器") { _, _ -> closeReader(target) }
             is MigrationState.RetryableFailure -> builder
                 .setTitle("同步未完成")
-                .setMessage("本次同步未完成，已确认没有保存本次合并结果。${reasonMessage(state.reason)}")
+                .setMessage("本次同步未完成，已确认没有保存本次合并结果。${MigrationMessages.reason(state.reason)}")
                 .setPositiveButton("重试") { _, _ -> session.start() }
                 .setNegativeButton("关闭") { _, _ -> session.dismiss() }
                 .setOnCancelListener { session.dismiss() }
             is MigrationState.Stopped -> builder
                 .setTitle("本次未同步")
-                .setMessage(reasonMessage(state.reason))
+                .setMessage(MigrationMessages.reason(state.reason))
                 .setPositiveButton("关闭") { _, _ -> session.dismiss() }
                 .setOnCancelListener { session.dismiss() }
             MigrationState.AwaitingEntry, MigrationState.Closed -> return
@@ -270,21 +270,6 @@ internal class LinovelibMigrationController(
     fun onUnload() {
         binding.set(null)
         session.onUnload()
-    }
-
-    private fun reasonMessage(reason: MigrationReason): String = when (reason) {
-        MigrationReason.NoData -> "没有可迁入的 TW 数据，本次未保存任何合并结果。"
-        MigrationReason.TargetAlreadyMigratedInactive -> "当前 Linovelib 的本地数据中已有迁入记录，本次没有再次合并。"
-        MigrationReason.NotReady -> "请返回前台，等待应用初始化完成后重试。"
-        MigrationReason.StartupConflict -> "当前启动有后台任务，请关闭并重新打开阅读器后再试。"
-        MigrationReason.SessionChanged -> "当前启动会话已变化，请关闭并重新打开阅读器后再试。"
-        MigrationReason.DisplayUnavailable -> "迁入窗口未能显示，请返回主页面后重试。"
-        MigrationReason.SchedulingFailure -> "本次任务未能启动，可以重试。"
-        MigrationReason.SourceChanged -> "当前数据源已变化，本次没有继续合并。请重新打开阅读器后再试。"
-        MigrationReason.InputChanged -> "本地快照已变化，重试时将重新读取和校验。"
-        MigrationReason.InvalidData -> "本地数据或完成凭据无法通过校验，请检查本地数据后重新打开阅读器。"
-        MigrationReason.UnsupportedHost -> "当前宿主状态不符合迁入条件，请重新打开阅读器后再试。"
-        MigrationReason.StorageFailure -> "本地数据读取或保存失败，可以重试。"
     }
 
     companion object {

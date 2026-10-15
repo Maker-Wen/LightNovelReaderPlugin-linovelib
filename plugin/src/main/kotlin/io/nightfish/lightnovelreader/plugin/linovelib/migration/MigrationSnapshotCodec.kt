@@ -11,7 +11,39 @@ import java.util.zip.ZipFile
 internal class MigrationSnapshotCodec {
     data class Input(val snapshot: MigrationSnapshot, val file: File, val digest: String)
 
+    fun readTwSource(standard: File, alias: File): Input? {
+        val primary = if (standard.isFile) readable { read(standard, MigrationData.TW_SOURCE_ID) } else null
+        if (primary != null) return primary
+        return if (alias.isFile) readable { readTwAlias(alias) } else null
+    }
+
+    private inline fun readable(read: () -> Input?): Input? = try { read() } catch (_: Exception) { null }
+
+    /** A legacy -1 file is a TW candidate only when its persisted owner is TW. */
+    fun readTwAlias(file: File): Input? = resolveTwAlias(readSnapshot(file, -1))
+
     fun read(file: File, expectedSourceId: Int): Input {
+        val input = readSnapshot(file, expectedSourceId)
+        return if (expectedSourceId == -1) requireNotNull(resolveTwAlias(input)) {
+            "无法确认 -1 快照属于 TW"
+        } else input
+    }
+
+    private fun resolveTwAlias(input: Input): Input? {
+        val data = input.snapshot.data
+        val selected = data.getValue("userDataEntities").jsonArray.map { it.jsonObject }
+            .filter { it["path"] == JsonPrimitive(SOURCE_PATH) }.singleOrNull()
+        val value = selected?.get("value") as? JsonPrimitive
+        val owner = value?.takeIf { it.isString }?.content?.toIntOrNull()
+        require(selected?.get("type") == JsonPrimitive("Int") && owner != null && owner != -1) {
+            "无法确认 -1 快照属于 TW"
+        }
+        if (owner != MigrationData.TW_SOURCE_ID) return null
+        val resolved = JsonObject(data + ("webBookDataSourceId" to JsonPrimitive(MigrationData.TW_SOURCE_ID)))
+        return input.copy(snapshot = MigrationSnapshot(MigrationData.TW_SOURCE_ID, resolved))
+    }
+
+    private fun readSnapshot(file: File, expectedSourceId: Int): Input {
         require(file.isFile && file.length() in 1..MAX_BYTES.toLong()) { "源快照不存在或过大" }
         val digestBefore = digest(file)
         val bytes = file.inputStream().use { input ->
@@ -33,16 +65,13 @@ internal class MigrationSnapshotCodec {
         val data = decode(bytes)
         val encodedId = data.getValue("webBookDataSourceId").jsonPrimitive.int
         require(encodedId == expectedSourceId) { "源快照身份与文件名不一致" }
-        val resolved = if (expectedSourceId == -1) {
-            val selected = data.getValue("userDataEntities").jsonArray.map { it.jsonObject }
-                .filter { it["path"]?.jsonPrimitive?.content == SOURCE_PATH }
-            require(selected.size == 1 && selected.single()["type"]?.jsonPrimitive?.content == "Int" &&
-                selected.single()["value"]?.jsonPrimitive?.content == MigrationData.TW_SOURCE_ID.toString()) {
-                "无法确认 -1 快照属于 TW"
-            }
-            JsonObject(data + ("webBookDataSourceId" to JsonPrimitive(MigrationData.TW_SOURCE_ID)))
-        } else data
-        return Input(MigrationSnapshot(if (expectedSourceId == -1) MigrationData.TW_SOURCE_ID else expectedSourceId, resolved), file, digestBefore)
+        if (expectedSourceId == MigrationData.TW_SOURCE_ID) {
+            val owners = data.getValue("userDataEntities").jsonArray.map { it.jsonObject }
+                .filter { it["path"] == JsonPrimitive(SOURCE_PATH) }
+            if (owners.isNotEmpty()) require(owners.size == 1 && owners.single()["type"] == JsonPrimitive("Int") &&
+                owners.single()["value"] == JsonPrimitive(MigrationData.TW_SOURCE_ID.toString())) { "TW 快照归属不明确" }
+        }
+        return Input(MigrationSnapshot(expectedSourceId, data), file, digestBefore)
     }
 
     companion object {
@@ -64,15 +93,28 @@ internal class MigrationSnapshotCodec {
 
         fun decode(bytes: ByteArray): JsonObject {
             require(bytes.isNotEmpty() && bytes.size <= MAX_BYTES) { "无效快照大小" }
-            val data = Decoder(bytes).decode().jsonObject
-            require(data.keys == (MigrationData.TABLES + "webBookDataSourceId").toSet()) { "不支持的源快照结构" }
-            MigrationData.TABLES.forEach { name ->
-                require(data.getValue(name) is JsonArray && data.getValue(name).jsonArray.all { it is JsonObject }) {
-                    "源快照实体列表无效：$name"
+            val decoder = Decoder(bytes)
+            val data = decoder.decode().jsonObject
+            val id = data["webBookDataSourceId"] as? JsonPrimitive
+            require(id != null && !id.isString && id.intOrNull != null) { "源快照缺少合法 ID" }
+            if (id.int == MigrationData.CURRENT_SOURCE_ID) {
+                // An inactive target must never lose original rows before the planner sees them.
+                require(!decoder.hasUnavailableFloats && data.keys == (MigrationData.TABLES + "webBookDataSourceId").toSet()) {
+                    "当前源快照无法完整装载"
                 }
+                MigrationData.TABLES.forEach { name ->
+                    require(data[name] is JsonArray && data.getValue(name).jsonArray.all { it is JsonObject }) {
+                        "当前源快照实体列表无法完整装载：$name"
+                    }
+                }
+                return data
             }
-            require(data.getValue("webBookDataSourceId").jsonPrimitive.intOrNull != null) { "源快照缺少合法 ID" }
-            return data
+            return JsonObject(buildMap {
+                put("webBookDataSourceId", id)
+                MigrationData.TABLES.forEach { name ->
+                    put(name, JsonArray((data[name] as? JsonArray).orEmpty().filterIsInstance<JsonObject>()))
+                }
+            })
         }
 
         private fun readBounded(input: InputStream): ByteArray {
@@ -92,6 +134,8 @@ internal class MigrationSnapshotCodec {
     private class Decoder(private val bytes: ByteArray) {
         private var offset = 0
         private var nodes = 0
+        var hasUnavailableFloats = false
+            private set
         fun decode(): JsonElement = value(0).also { require(offset == bytes.size) { "源快照含尾随数据" } }
         private fun byte(): Int {
             require(offset < bytes.size) { "源快照被截断" }
@@ -115,13 +159,14 @@ internal class MigrationSnapshotCodec {
                 20 -> JsonPrimitive(false)
                 21 -> JsonPrimitive(true)
                 22 -> JsonNull
-                26 -> JsonPrimitive(Float.fromBits(argument(26).toInt())).also { require(it.jsonPrimitive.float.isFinite()) }
+                26 -> Float.fromBits(argument(26).toInt()).let {
+                    if (it.isFinite()) JsonPrimitive(it) else { hasUnavailableFloats = true; JsonNull }
+                }
                 27 -> {
                     require(offset + 8 <= bytes.size)
                     val number = ByteBuffer.wrap(bytes, offset, 8).double
                     offset += 8
-                    require(number.isFinite())
-                    JsonPrimitive(number)
+                    if (number.isFinite()) JsonPrimitive(number) else { hasUnavailableFloats = true; JsonNull }
                 }
                 else -> error("不支持的 CBOR 值")
             }

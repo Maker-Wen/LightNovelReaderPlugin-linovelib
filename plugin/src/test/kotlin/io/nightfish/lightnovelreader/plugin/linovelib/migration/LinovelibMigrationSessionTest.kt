@@ -254,6 +254,44 @@ class LinovelibMigrationSessionTest {
         }
     }
 
+    @Test fun untrustedCompletionAndNoRecoverableDataCanBeDismissedWithoutRestartOrRetry() {
+        listOf(MigrationReason.NoData, MigrationReason.UntrustedCompletion).forEach { reason ->
+            val h = Harness().apply { open() }
+            h.host.execute = { _, _ -> MigrationAttemptResult.NoWork(reason) }
+            h.session.start()
+            h.settle()
+            assertEquals(MigrationState.Stopped(reason), h.session.state)
+            h.session.start()
+            assertEquals(1, h.host.calls)
+            h.session.dismiss()
+            assertEquals(MigrationState.Closed, h.session.state)
+            assertFalse(h.session.isAlive)
+            assertTrue(h.runtime.shutDown)
+            h.session.onMainResumed()
+            h.session.start()
+            assertEquals(MigrationState.Closed, h.session.state)
+            assertEquals(1, h.host.calls)
+        }
+    }
+
+    @Test fun confirmedFailedWritesCanBeClosedToContinueUsingTheReader() {
+        listOf(
+            MigrationAttemptResult.NotCommitted(MigrationReason.StorageFailure, true),
+            MigrationAttemptResult.NotCommitted(MigrationReason.InvalidData, false),
+        ).forEach { outcome ->
+            val h = Harness().apply { open() }
+            h.host.execute = { _, _ -> outcome }
+            h.session.start()
+            h.settle()
+            assertNotEquals(MigrationState.RestartRequired, h.session.state)
+            h.session.dismiss()
+            assertEquals(MigrationState.Closed, h.session.state)
+            h.session.onMainResumed()
+            h.session.start()
+            assertEquals(1, h.host.calls)
+        }
+    }
+
     @Test fun dialogShowFailureDoesNotScheduleOrGetStuckRunning() {
         val h = Harness().apply { open(); renderingFails = true }
         h.session.start()
