@@ -27,8 +27,8 @@ android {
         applicationId = "io.nightfish.lightnovelreader.plugin.linovelib"
         minSdk = 24
         targetSdk = 36
-        versionCode = 35
-        versionName = "2.1.1"
+        versionCode = 36
+        versionName = "2.2.0"
     }
 
     buildFeatures {
@@ -90,6 +90,12 @@ tasks.withType<KotlinJvmCompile>().configureEach {
         jvmTarget.set(JvmTarget.JVM_17)
         freeCompilerArgs.add("-opt-in=kotlin.RequiresOptIn")
     }
+}
+
+// Host tests need Android Uri and the API 3 host's actual classes, not android.jar stubs.
+// They are compiled here and run on a device by scripts/run-host-tests.py.
+tasks.withType<Test>().configureEach {
+    exclude("**/*HostTest*.class")
 }
 
 fun registerHostAbiCheck(variant: String) = tasks.register(

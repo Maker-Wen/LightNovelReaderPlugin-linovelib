@@ -9,7 +9,7 @@ on:
       tag:
         description: 'Existing tag to build and publish'
         required: true
-        default: 'v2.1.1'
+        default: 'v2.2.0'
       publish:
         description: 'Publish/update the GitHub release'
         type: boolean
@@ -61,7 +61,7 @@ jobs:
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-        run: ./gradlew :plugin:testDebugUnitTest :plugin:assembleRelease
+        run: ./gradlew :plugin:testDebugUnitTest :plugin:assembleRelease :plugin:lintRelease
 
       - name: Prepare release asset
         id: asset
@@ -97,11 +97,13 @@ jobs:
           OUT="${{ steps.asset.outputs.out }}"
           SHA="${{ steps.asset.outputs.sha }}"
           VERSION="${TAG#v}"
-          cat > release-notes.md <<'EOF'
-          优化加载状态。
-          EOF
+          NOTES="docs/releases/${TAG}.md"
+          [ -f "$NOTES" ] || { echo "release notes not found: $NOTES" >&2; exit 1; }
+          cp "$NOTES" release-notes.md
           printf '\nSHA-256: `%s`\n' "$SHA" >> release-notes.md
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            IS_DRAFT=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
+            [ "$IS_DRAFT" = "true" ] || { echo "refusing to replace assets of a published release: $TAG" >&2; exit 1; }
             gh release upload "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
           else

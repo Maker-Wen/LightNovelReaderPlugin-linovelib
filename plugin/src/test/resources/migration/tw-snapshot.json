@@ -1,0 +1,212 @@
+{
+    "webBookDataSourceId": 282781674,
+    "bookInformationEntities": [
+        {
+            "id": "4401",
+            "title": "tw book 4401",
+            "subtitle": "",
+            "coverUri": "https://example.invalid/4401.jpg",
+            "author": "author 4401",
+            "description": "tw fixture",
+            "tags": [
+                "fixture"
+            ],
+            "publishingHouse": "publisher",
+            "wordCount": {
+                "count": 120000,
+                "unit": null,
+                "unitResId": null
+            },
+            "lastUpdated": "2026-10-09T10:00",
+            "isComplete": false
+        },
+        {
+            "id": "5016",
+            "title": "tw book 5016",
+            "subtitle": "",
+            "coverUri": "https://example.invalid/5016.jpg",
+            "author": "author 5016",
+            "description": "tw fixture",
+            "tags": [
+                "fixture"
+            ],
+            "publishingHouse": "publisher",
+            "wordCount": {
+                "count": 120000,
+                "unit": null,
+                "unitResId": null
+            },
+            "lastUpdated": "2026-10-09T10:00",
+            "isComplete": false
+        }
+    ],
+    "bookRecordEntities": [
+        {
+            "bookId": "4401",
+            "date": "2026-10-09",
+            "reads": 2,
+            "seconds": 180,
+            "isFinished": false,
+            "isFavorited": true,
+            "firstSeen": "09:30",
+            "lastSeen": "10:00"
+        },
+        {
+            "bookId": "5016",
+            "date": "2026-10-09",
+            "reads": 2,
+            "seconds": 180,
+            "isFinished": false,
+            "isFavorited": true,
+            "firstSeen": "09:30",
+            "lastSeen": "10:00"
+        }
+    ],
+    "dailyCountEntities": [
+        {
+            "date": "2026-10-09",
+            "timeCount": "AAAAAAAAAAtAAAAAAAAAAAAA"
+        }
+    ],
+    "bookshelfEntities": [
+        {
+            "id": 7,
+            "name": "TW 收藏",
+            "sortType": "name",
+            "sortReversed": false,
+            "autoCache": false,
+            "systemUpdateReminder": false,
+            "allBookIds": [
+                "4401",
+                "5016"
+            ],
+            "pinnedBookIds": [
+                "4401"
+            ],
+            "updatedBookIds": []
+        }
+    ],
+    "bookshelfBookMetadataEntities": [
+        {
+            "id": "4401",
+            "lastUpdate": "2026-10-09T10:00",
+            "bookShelfIds": [
+                7
+            ]
+        },
+        {
+            "id": "5016",
+            "lastUpdate": "2026-10-09T10:00",
+            "bookShelfIds": [
+                7
+            ]
+        }
+    ],
+    "chapterContentEntities": [
+        {
+            "id": "linovelib-v3:4401001",
+            "title": "chapter 4401",
+            "content": "{\"components\":[{\"id\":\"simple_text\",\"data\":{\"text\":\"tw body 4401\"}}]}",
+            "lastChapter": "",
+            "nextChapter": ""
+        },
+        {
+            "id": "linovelib-v3:5016001",
+            "title": "chapter 5016",
+            "content": "{\"components\":[{\"id\":\"simple_text\",\"data\":{\"text\":\"tw body 5016\"}}]}",
+            "lastChapter": "",
+            "nextChapter": ""
+        }
+    ],
+    "chapterInformationEntities": [
+        {
+            "id": "linovelib-v3:4401001",
+            "title": "chapter 4401"
+        },
+        {
+            "id": "linovelib-v3:5016001",
+            "title": "chapter 5016"
+        }
+    ],
+    "formattingRuleEntities": [
+        {
+            "id": 3,
+            "bookId": "5016",
+            "name": "tw formatting",
+            "isRegex": false,
+            "match": "tw",
+            "replacement": "",
+            "isEnabled": true
+        }
+    ],
+    "userDataEntities": [
+        {
+            "path": "settings.data.web_data_source_id",
+            "group": "settings.data",
+            "type": "Int",
+            "value": "282781674"
+        },
+        {
+            "path": "reading_books",
+            "group": "",
+            "type": "StringList",
+            "value": "4401,5016"
+        },
+        {
+            "path": "linovelib.probe_setting",
+            "group": "linovelib",
+            "type": "String",
+            "value": "tw"
+        }
+    ],
+    "userReadingDataEntities": [
+        {
+            "id": "4401",
+            "lastReadTime": "2026-10-09T10:00",
+            "totalReadTime": 120,
+            "readingProgress": 0.5,
+            "lastReadChapterId": "linovelib-v3:4401001",
+            "lastReadChapterTitle": "chapter 4401",
+            "currentChapterReadingProgressMap": {
+                "linovelib-v3:4401001": 0.75
+            },
+            "maxChapterReadingProgressMap": {
+                "linovelib-v3:4401001": 0.875
+            }
+        },
+        {
+            "id": "5016",
+            "lastReadTime": "2026-10-09T10:00",
+            "totalReadTime": 120,
+            "readingProgress": 0.5,
+            "lastReadChapterId": "linovelib-v3:5016001",
+            "lastReadChapterTitle": "chapter 5016",
+            "currentChapterReadingProgressMap": {
+                "linovelib-v3:5016001": 0.75
+            },
+            "maxChapterReadingProgressMap": {
+                "linovelib-v3:5016001": 0.875
+            }
+        }
+    ],
+    "volumeEntities": [
+        {
+            "bookId": "4401",
+            "volumeId": "4401-1",
+            "volumeTitle": "first volume",
+            "chapterIds": [
+                "linovelib-v3:4401001"
+            ],
+            "index": 0
+        },
+        {
+            "bookId": "5016",
+            "volumeId": "5016-1",
+            "volumeTitle": "first volume",
+            "chapterIds": [
+                "linovelib-v3:5016001"
+            ],
+            "index": 0
+        }
+    ]
+}

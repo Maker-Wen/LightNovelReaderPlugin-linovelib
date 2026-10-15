@@ -4,6 +4,8 @@ import io.nightfish.lightnovelreader.api.web.explore.ExploreExpandedPageDataSour
 import io.nightfish.lightnovelreader.api.web.explore.filter.Filter
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
@@ -26,26 +28,34 @@ internal class LinovelibLinkedExpandedPageDataSource(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     override val filters: List<Filter<*>> = emptyList(),
-    private val filteredUrl: (() -> String)? = null
+    private val filteredUrl: (() -> String)? = null,
+    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
-    @Volatile
+    private val sessionLock = Any()
     private var loadMoreRequests: Channel<Unit>? = null
 
     override fun loadMore() {
-        loadMoreRequests?.trySend(Unit)
+        val requests = synchronized(sessionLock) { loadMoreRequests }
+        requests?.trySend(Unit)
     }
 
     override fun getResultFlow(): Flow<SearchResult> = flow {
         val requests = Channel<Unit>(Channel.CONFLATED)
-        loadMoreRequests = requests
-        // The host cancels and recollects on filter changes. Keep each collection's pages consistent.
-        val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
-        val emittedBookIds = mutableSetOf<String>()
-        var currentPage = 1
-        var lastPage = 1
         try {
+            // The host cancels and recollects on filter changes. Snapshot before publishing
+            // so a cancelled collection cannot replace a newer collection's request channel.
+            val firstPageUrl = filteredUrl?.invoke() ?: targetUrl
+            val context = currentCoroutineContext()
+            synchronized(sessionLock) {
+                context.ensureActive()
+                loadMoreRequests = requests
+            }
+            val emittedBookIds = mutableSetOf<String>()
+            var currentPage = 1
+            var lastPage = 1
             do {
+                context.ensureActive()
                 val html = runCatching {
                     htmlLoader(LinovelibUrls.listPage(firstPageUrl, currentPage)
                         ?: error("Unsupported Linovelib pagination URL: $firstPageUrl"))
@@ -54,16 +64,18 @@ internal class LinovelibLinkedExpandedPageDataSource(
                     emit(SearchResult.End())
                     return@flow
                 }
-                if (currentPage == 1) {
-                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else parser.parseLastPage(html)
-                }
-                val parsedBooks = parser.parseListRow(displayTag, html).books
-                if (parsedBooks.isEmpty() && !LinovelibSearchResponse(firstPageUrl, html).hasEmptyResultList()) {
+                val page = parser.parseListPage(html)
+                context.ensureActive()
+                if (page == null) {
                     emit(SearchResult.Error("未能识别书单页面，请稍后重试"))
                     emit(SearchResult.End())
                     return@flow
                 }
-                val books = parsedBooks.filter { emittedBookIds.add(it.id) }
+                if (currentPage == 1) {
+                    lastPage = if (LinovelibUrls.listPage(firstPageUrl, 2) == null) 1 else page.lastPage
+                }
+                metadata.rememberBooks(page.books)
+                val books = page.books.filter { emittedBookIds.add(it.id) }
                 books.forEach { emit(SearchResult.SingleBook(it.id)) }
                 if (currentPage == 1 && books.isEmpty()) break
                 if (currentPage >= lastPage) break
@@ -73,7 +85,9 @@ internal class LinovelibLinkedExpandedPageDataSource(
             if (emittedBookIds.isEmpty()) emit(SearchResult.Empty())
             emit(SearchResult.End())
         } finally {
-            if (loadMoreRequests === requests) loadMoreRequests = null
+            synchronized(sessionLock) {
+                if (loadMoreRequests === requests) loadMoreRequests = null
+            }
             requests.close()
         }
     }

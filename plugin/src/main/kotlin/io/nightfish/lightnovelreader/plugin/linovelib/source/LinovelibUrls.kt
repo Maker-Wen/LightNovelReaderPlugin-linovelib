@@ -62,11 +62,6 @@ object LinovelibUrls {
     fun fullChapter(host: String, bookId: String, chapterId: String): String =
         chapter(host, bookId, chapterId)
 
-    // Cached covers may still use the former simplified or traditional domain.
-    internal fun currentCoverUrl(url: String): String = url.replace(
-        Regex("^https?://(?:www\\.bilinovel\\.com|tw\\.linovelib\\.com)(?=/files/article/image/)"), HOST
-    )
-
     fun cover(bookId: String): String = cover(HOST, bookId)
 
     fun cover(host: String, bookId: String): String {
