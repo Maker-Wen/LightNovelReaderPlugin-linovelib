@@ -86,7 +86,7 @@ class MigrationPlannerTest {
     }
 
     @Test
-    fun clearsLegacyIncomingReferencesAndProgressWithoutRewritingThemAsV3() {
+    fun skipsLegacyIncomingReadingLocationsButStillFiltersCacheReferencesAndProgressItems() {
         listOf("11", "linovelib-v2:11").forEach { legacyId ->
             val unsupportedNavigation = JsonObject(body("linovelib-v3:21", "kept body", previous = legacyId)
                 .toMutableMap().apply { put("nextChapter", JsonPrimitive(legacyId)) })
@@ -96,7 +96,10 @@ class MigrationPlannerTest {
                 "chapterContentEntities" to listOf(unsupportedNavigation, validNavigation),
                 "userReadingDataEntities" to listOf(reading("1", 45, legacyId, 0.3f,
                     current = obj(legacyId to 0.9f, "linovelib-v3:11" to 0.2f),
-                    maximum = obj(legacyId to 0.9f, "linovelib-v3:11" to 0.4f))),
+                    maximum = obj(legacyId to 0.9f, "linovelib-v3:11" to 0.4f)),
+                    reading("2", 45, "linovelib-v3:11", 0.3f,
+                        current = obj(legacyId to 0.9f, "linovelib-v3:11" to 0.2f),
+                        maximum = obj(legacyId to 0.9f, "linovelib-v3:11" to 0.4f))),
             )
             val result = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw).snapshot.data
             val bodies = result.rows("chapterContentEntities").associateBy { it.text("id") }
@@ -104,7 +107,8 @@ class MigrationPlannerTest {
             assertEquals("", bodies.getValue("linovelib-v3:21").text("nextChapter"))
             assertEquals(validNavigation, bodies.getValue("linovelib-v3:22"))
             val reading = result.rows("userReadingDataEntities").single()
-            assertEquals("", reading.text("lastReadChapterId"))
+            assertEquals("2", reading.text("id"))
+            assertEquals("linovelib-v3:11", reading.text("lastReadChapterId"))
             assertEquals("45", reading.text("totalReadTime"))
             assertEquals(obj("linovelib-v3:11" to 0.2f), reading["currentChapterReadingProgressMap"])
             assertEquals(obj("linovelib-v3:11" to 0.4f), reading["maxChapterReadingProgressMap"])
@@ -389,14 +393,12 @@ class MigrationPlannerTest {
     }
 
     @Test
-    fun repairsIncomingProgressAndCountWhileRejectingUnknownIdentity() {
+    fun skipsInvalidCountersWhileRejectingUnknownIdentity() {
         rejects { MigrationPlanner.normalizeChapterId("linovelib-v4:11") }
         rejects { MigrationPlanner.normalizeChapterId("book/1/chapter11.html") }
-        assertEquals("0.0", MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), snapshot(MigrationData.TW_SOURCE_ID,
-            "userReadingDataEntities" to listOf(reading("1", 1, "linovelib-v3:11", -0.2f)))).snapshot.data.rows("userReadingDataEntities").single().text("readingProgress"))
         rejects { MigrationPlanner.decodeHours("////////////////////////") }
-        assertEquals("0", MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), snapshot(MigrationData.TW_SOURCE_ID,
-            "bookRecordEntities" to listOf(record("1", 1, -1)))).snapshot.data.rows("bookRecordEntities").single().text("seconds"))
+        assertTrue(MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), snapshot(MigrationData.TW_SOURCE_ID,
+            "bookRecordEntities" to listOf(record("1", 1, -1)))).snapshot.data.rows("bookRecordEntities").isEmpty())
         rejects { MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), snapshot(MigrationData.TW_SOURCE_ID,
             "userDataEntities" to listOf(user(MigrationData.SELECTED_SOURCE, "Int", MigrationData.CURRENT_SOURCE_ID.toString())))) }
     }
@@ -438,11 +440,12 @@ class MigrationPlannerTest {
     }
 
     @Test
-    fun repairsTwReadingFieldsWithoutLosingAValidContinuationPosition() {
+    fun skipsInvalidChapterProgressItemsWhileKeepingValidReadingFields() {
         val tw = snapshot(MigrationData.TW_SOURCE_ID,
             "userReadingDataEntities" to listOf(
-                reading("1", -9, "linovelib-v3:11", 1.5f, timestamp = "unknown-time",
-                    current = obj("linovelib-v3:11" to 1.3f, "linovelib-v3:12" to -0.2f, "bad-key" to 0.6f, "linovelib-v3:13" to "NaN"),
+                reading("1", 45, "linovelib-v3:11", 0.4f,
+                    current = obj("linovelib-v3:11" to 1.3f, "linovelib-v3:12" to -0.2f, "bad-key" to 0.6f,
+                        "linovelib-v3:13" to "NaN", "linovelib-v3:14" to 0f, "linovelib-v3:15" to 1f),
                     maximum = obj("linovelib-v3:11" to 0.8f, "linovelib-v3:12" to 1.4f)),
                 reading("bad-book", 100, "linovelib-v3:11", 0.3f),
                 reading("2", 45, "linovelib-v3:21", 0.3f),
@@ -453,11 +456,11 @@ class MigrationPlannerTest {
         assertEquals(setOf("1", "2"), rows.keys)
         val recovered = rows.getValue("1")
         assertEquals("linovelib-v3:11", recovered.text("lastReadChapterId"))
-        assertEquals(java.time.LocalDateTime.MIN.toString(), recovered.text("lastReadTime"))
-        assertEquals("-1", recovered.text("totalReadTime"))
-        assertEquals("1.0", recovered.text("readingProgress"))
-        assertEquals(obj("linovelib-v3:11" to 1.0f, "linovelib-v3:12" to 0.0f), recovered["currentChapterReadingProgressMap"])
-        assertEquals(obj("linovelib-v3:11" to 0.8f, "linovelib-v3:12" to 1.0f), recovered["maxChapterReadingProgressMap"])
+        assertEquals("2026-10-11T12:00", recovered.text("lastReadTime"))
+        assertEquals("45", recovered.text("totalReadTime"))
+        assertEquals("0.4", recovered.text("readingProgress"))
+        assertEquals(obj("linovelib-v3:14" to 0f, "linovelib-v3:15" to 1f), recovered["currentChapterReadingProgressMap"])
+        assertEquals(obj("linovelib-v3:11" to 0.8f), recovered["maxChapterReadingProgressMap"])
         assertTrue(plan.hasRecoverableData)
     }
 
@@ -526,48 +529,167 @@ class MigrationPlannerTest {
     }
 
     @Test
-    fun recoversTwRecordFieldsIndependentlyWithoutInventingMissingTime() {
-        val result = MigrationPlanner.plan(
-            snapshot(MigrationData.CURRENT_SOURCE_ID, "bookRecordEntities" to listOf(record("1", 2, 100))),
-            snapshot(MigrationData.TW_SOURCE_ID,
-                "bookRecordEntities" to listOf(record("1", -1, 60, "bad", "12:00", finished = true),
-                    record("2", 3, -5, "bad", "bad", favorite = true), record("bad-book", 5, 300)),
-                "dailyCountEntities" to listOf(obj("date" to "2026-10-11", "timeCount" to "bad-count")),
-            ),
-        ).snapshot.data
-        val records = result.rows("bookRecordEntities").associateBy { it.text("bookId") }
-        assertEquals(setOf("1", "2"), records.keys)
-        assertEquals("2", records.getValue("1").text("reads"))
-        assertEquals("160", records.getValue("1").text("seconds"))
-        assertEquals("true", records.getValue("1").text("isFinished"))
-        assertEquals("3", records.getValue("2").text("reads"))
-        assertEquals("0", records.getValue("2").text("seconds"))
-        assertEquals(java.time.LocalTime.MIN.toString(), records.getValue("2").text("firstSeen"))
-        assertEquals(java.time.LocalTime.MIN.toString(), records.getValue("2").text("lastSeen"))
-        assertEquals("true", records.getValue("2").text("isFavorited"))
-        assertTrue(result.rows("dailyCountEntities").isEmpty())
+    fun skipsTwHistoryWithBadCountersOrBooleansWithoutChangingCurrentHistory() {
+        val valid = record("1", 3, 200, "10:00", "14:00", finished = true, favorite = true)
+        val invalidRows = buildList {
+            listOf("reads", "seconds").forEach { field ->
+                listOf(JsonPrimitive(-1), JsonPrimitive("3"), JsonNull).forEach { value ->
+                    add(JsonObject(valid + (field to value)))
+                }
+                add(JsonObject(valid - field))
+            }
+            listOf("isFinished", "isFavorited").forEach { field ->
+                listOf(JsonPrimitive("false"), JsonPrimitive(0), JsonNull).forEach { value ->
+                    add(JsonObject(valid + (field to value)))
+                }
+            }
+        }
+        val currentRow = record("1", 2, 100, "12:00", "13:00")
+        val validOther = record("2", 1, 45)
+        invalidRows.forEach { invalid ->
+            val tw = snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(invalid))
+            val emptyTarget = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+            assertTrue("Invalid history must be skipped: $invalid", emptyTarget.snapshot.data.rows("bookRecordEntities").isEmpty())
+            assertFalse(emptyTarget.hasRecoverableData)
+            val current = snapshot(MigrationData.CURRENT_SOURCE_ID, "bookRecordEntities" to listOf(currentRow))
+            val withCurrent = MigrationPlanner.plan(current, tw)
+            assertEquals(listOf(currentRow), withCurrent.snapshot.data.rows("bookRecordEntities"))
+            assertFalse(withCurrent.hasRecoverableData)
+            val mixed = MigrationPlanner.plan(current,
+                snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(invalid, validOther)))
+            assertEquals(listOf(currentRow, validOther), mixed.snapshot.data.rows("bookRecordEntities"))
+            assertTrue(mixed.hasRecoverableData)
+        }
     }
 
     @Test
-    fun keepsKnownCurrentTimesWhenIncomingRecordTimesCannotBeRecovered() {
+    fun skipsTwReadingWithBadRequiredFieldsWithoutChangingCurrentStateOrValidSiblings() {
+        val valid = reading("1", 100, "linovelib-v3:12", 0.7f,
+            current = obj("linovelib-v3:12" to 0.7f), maximum = obj("linovelib-v3:12" to 0.9f))
+        val invalidFields = mapOf(
+            "lastReadTime" to listOf(JsonPrimitive("unknown-time"), JsonPrimitive(12), JsonNull),
+            "lastReadChapterId" to listOf(JsonPrimitive("unknown:chapter"), JsonPrimitive(12), JsonNull),
+            "lastReadChapterTitle" to listOf(JsonPrimitive(12), JsonNull),
+            "totalReadTime" to listOf(JsonPrimitive(-9), JsonPrimitive("100"), JsonNull),
+            "currentChapterReadingProgressMap" to listOf(JsonPrimitive("{}"), JsonArray(emptyList()), JsonNull),
+            "maxChapterReadingProgressMap" to listOf(JsonPrimitive("{}"), JsonArray(emptyList()), JsonNull),
+        )
+        val invalidRows = invalidFields.flatMap { (field, values) ->
+            values.map { JsonObject(valid + (field to it)) } + JsonObject(valid - field)
+        }
+        val currentRow = reading("1", 45, "linovelib-v3:11", 0.3f)
+        val validOther = reading("2", 30, "linovelib-v3:21", 0.4f)
+        invalidRows.forEach { invalid ->
+            val tw = snapshot(MigrationData.TW_SOURCE_ID, "userReadingDataEntities" to listOf(invalid))
+            val emptyTarget = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+            assertTrue("Invalid reading state must be skipped: $invalid", emptyTarget.snapshot.data.rows("userReadingDataEntities").isEmpty())
+            assertFalse(emptyTarget.hasRecoverableData)
+            val current = snapshot(MigrationData.CURRENT_SOURCE_ID, "userReadingDataEntities" to listOf(currentRow))
+            val withCurrent = MigrationPlanner.plan(current, tw)
+            assertEquals(listOf(currentRow), withCurrent.snapshot.data.rows("userReadingDataEntities"))
+            assertFalse(withCurrent.hasRecoverableData)
+            val mixed = MigrationPlanner.plan(current,
+                snapshot(MigrationData.TW_SOURCE_ID, "userReadingDataEntities" to listOf(invalid, validOther)))
+            assertEquals(listOf(currentRow, validOther), mixed.snapshot.data.rows("userReadingDataEntities"))
+            assertTrue(mixed.hasRecoverableData)
+        }
+    }
+
+    @Test
+    fun skipsTwRecordsWithInvalidOrMissingTimesWithoutChangingCurrentHistory() {
+        val valid = record("1", 3, 200, "10:00", "14:00", finished = true)
+        val invalidRows = listOf(
+            record("1", 3, 200, "bad", "14:00"),
+            record("1", 3, 200, "10:00", "bad"),
+            record("1", 3, 200, "bad", "bad"),
+            JsonObject(valid - "firstSeen"),
+            JsonObject(valid - "lastSeen"),
+            JsonObject(valid + ("firstSeen" to JsonNull)),
+            JsonObject(valid + ("lastSeen" to JsonPrimitive(12))),
+        )
+        val currentRow = record("1", 2, 100, "12:00", "13:00")
+        invalidRows.forEach { invalid ->
+            val tw = snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(invalid))
+            val emptyTarget = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+            assertTrue(emptyTarget.snapshot.data.rows("bookRecordEntities").isEmpty())
+            assertFalse(emptyTarget.hasRecoverableData)
+            val current = snapshot(MigrationData.CURRENT_SOURCE_ID, "bookRecordEntities" to listOf(currentRow))
+            val withCurrent = MigrationPlanner.plan(current, tw)
+            assertEquals(listOf(currentRow), withCurrent.snapshot.data.rows("bookRecordEntities"))
+            assertFalse(withCurrent.hasRecoverableData)
+            val validOther = record("2", 1, 45)
+            val mixed = MigrationPlanner.plan(current,
+                snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(invalid, validOther)))
+            assertEquals(listOf(currentRow, validOther), mixed.snapshot.data.rows("bookRecordEntities"))
+            assertTrue(mixed.hasRecoverableData)
+        }
+    }
+
+    @Test
+    fun preservesCurrentBadTimesAndBlocksValidTwHistoryForTheSameKey() {
+        val current = record("1", 2, 100, "bad", "13:00")
         val result = MigrationPlanner.plan(
-            snapshot(MigrationData.CURRENT_SOURCE_ID,
-                "bookRecordEntities" to listOf(record("1", 2, 100, "12:00", "13:00"), record("2", 1, 10, "12:00", "13:00"))),
+            snapshot(MigrationData.CURRENT_SOURCE_ID, "bookRecordEntities" to listOf(current)),
+            snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(record("1", 3, 200))),
+        )
+        assertEquals(listOf(current), result.snapshot.data.rows("bookRecordEntities"))
+        assertFalse(result.hasRecoverableData)
+    }
+
+    @Test
+    fun rejectsInvalidTwOverallProgressInsteadOfClampingOrReplacingItWithZero() {
+        val currentRow = reading("1", 45, "linovelib-v3:11", 0.3f)
+        val valid = reading("1", 100, "linovelib-v3:12", 0.7f)
+        val invalidValues = listOf(JsonPrimitive(-0.2f), JsonPrimitive(1.2f), JsonNull, JsonPrimitive("0.7"))
+        val invalidRows = invalidValues.map { JsonObject(valid + ("readingProgress" to it)) } +
+            JsonObject(valid - "readingProgress")
+        invalidRows.forEach { invalid ->
+            val tw = snapshot(MigrationData.TW_SOURCE_ID, "userReadingDataEntities" to listOf(invalid))
+            val emptyTarget = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+            assertTrue(emptyTarget.snapshot.data.rows("userReadingDataEntities").isEmpty())
+            assertFalse(emptyTarget.hasRecoverableData)
+            val withCurrent = MigrationPlanner.plan(
+                snapshot(MigrationData.CURRENT_SOURCE_ID, "userReadingDataEntities" to listOf(currentRow)), tw)
+            assertEquals(listOf(currentRow), withCurrent.snapshot.data.rows("userReadingDataEntities"))
+            assertFalse(withCurrent.hasRecoverableData)
+        }
+    }
+
+    @Test
+    fun preservesLegalDefaultsAndRealProgressEndpoints() {
+        val rawRecord = JsonObject(record("1", 1, 10) - setOf("isFinished", "isFavorited"))
+        val rawShelf = JsonObject(shelf(1, "已收藏", listOf("1")) - "sortReversed")
+        val plan = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID),
             snapshot(MigrationData.TW_SOURCE_ID,
-                "bookRecordEntities" to listOf(record("1", 3, 200, "bad", "bad", finished = true),
-                    record("2", 2, 20, "bad", "14:00", favorite = true))),
-        ).snapshot.data.rows("bookRecordEntities").associateBy { it.text("bookId") }
-        val bothUnknown = result.getValue("1")
-        assertEquals("12:00", bothUnknown.text("firstSeen"))
-        assertEquals("13:00", bothUnknown.text("lastSeen"))
-        assertEquals("5", bothUnknown.text("reads"))
-        assertEquals("300", bothUnknown.text("seconds"))
-        assertEquals("true", bothUnknown.text("isFinished"))
-        val firstUnknown = result.getValue("2")
-        assertEquals("12:00", firstUnknown.text("firstSeen"))
-        assertEquals("14:00", firstUnknown.text("lastSeen"))
-        assertEquals("true", firstUnknown.text("isFavorited"))
-        assertEquals(setOf("bookId", "date", "reads", "seconds", "firstSeen", "lastSeen", "isFinished", "isFavorited"), bothUnknown.keys)
+                "bookRecordEntities" to listOf(rawRecord), "bookshelfEntities" to listOf(rawShelf),
+                "userReadingDataEntities" to listOf(
+                    JsonObject(reading("1", -1, "", 0f, timestamp = java.time.LocalDateTime.MIN.toString()) +
+                        ("lastReadChapterTitle" to JsonPrimitive(""))), reading("2", -1, "", 1f))))
+        val result = plan.snapshot.data
+        val restoredRecord = result.rows("bookRecordEntities").single()
+        assertEquals("false", restoredRecord.text("isFinished"))
+        assertEquals("false", restoredRecord.text("isFavorited"))
+        assertEquals("false", result.rows("bookshelfEntities").single().text("sortReversed"))
+        assertEquals(listOf("0.0", "1.0"), result.rows("userReadingDataEntities").map { it.text("readingProgress") })
+        assertEquals(listOf("-1", "-1"), result.rows("userReadingDataEntities").map { it.text("totalReadTime") })
+        val sentinel = result.rows("userReadingDataEntities").first()
+        assertEquals(java.time.LocalDateTime.MIN.toString(), sentinel.text("lastReadTime"))
+        assertEquals("", sentinel.text("lastReadChapterId"))
+        assertEquals("", sentinel.text("lastReadChapterTitle"))
+        assertEquals(obj(), sentinel["currentChapterReadingProgressMap"])
+        assertEquals(obj(), sentinel["maxChapterReadingProgressMap"])
+    }
+
+    @Test
+    fun boundsComputedHostOverallProgressWhenHistoricalChaptersExceedTheCurrentCatalog() {
+        val tw = catalogTw().let { it.copy(data = JsonObject(it.data + ("userReadingDataEntities" to JsonArray(listOf(
+            reading("1", 45, "linovelib-v3:11", 0.8f,
+                maximum = obj("linovelib-v3:11" to 1f, "linovelib-v3:99" to 1f)),
+        ))))) }
+        val row = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+            .snapshot.data.rows("userReadingDataEntities").single()
+        assertEquals("1.0", row.text("readingProgress"))
+        assertEquals(obj("linovelib-v3:11" to 1f, "linovelib-v3:99" to 1f), row["maxChapterReadingProgressMap"])
     }
 
     @Test

@@ -8,24 +8,55 @@ import org.junit.Test
 
 /** The real API 3 serializers reject fields unavailable in that host contract. */
 class MigrationBodyHostTest {
-    @Test fun malformedTwDatesRecoverOnTheShrunkHostWithoutLosingContinuation() {
+    @Test fun malformedTwReadingDatesAreSkippedOnTheShrunkHost() {
         val reading = buildJsonObject {
             put("id", "1"); put("lastReadTime", "not-a-time"); put("totalReadTime", 10)
-            put("readingProgress", 1.2); put("lastReadChapterId", "linovelib-v3:11"); put("lastReadChapterTitle", "continue")
-            put("currentChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 1.2); put("broken", 0.5) })
+            put("readingProgress", 0.8); put("lastReadChapterId", "linovelib-v3:11"); put("lastReadChapterTitle", "continue")
+            put("currentChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 0.8); put("linovelib-v3:12", 1.2); put("broken", 0.5) })
             put("maxChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 1.2) })
         }
         val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {
             it.copy(data = JsonObject(it.data + ("userReadingDataEntities" to JsonArray(listOf(reading)))))
         }
-        assertTrue(MigrationPlanner.hasRecoverableData(tw))
+        assertFalse(MigrationPlanner.hasRecoverableData(tw))
+        val plan = MigrationPlanner.plan(MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+        assertFalse(plan.hasRecoverableData)
+        assertTrue(plan.snapshot.data.getValue("userReadingDataEntities").jsonArray.isEmpty())
+    }
+
+    @Test fun legalSentinelsAndValidChapterProgressSurviveOnTheShrunkHost() {
+        val reading = buildJsonObject {
+            put("id", "1"); put("lastReadTime", java.time.LocalDateTime.MIN.toString()); put("totalReadTime", -1)
+            put("readingProgress", 0.0); put("lastReadChapterId", ""); put("lastReadChapterTitle", "")
+            put("currentChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 0.8); put("linovelib-v3:12", 1.2); put("broken", 0.5) })
+            put("maxChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 1.0); put("linovelib-v3:12", -0.2) })
+        }
+        val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {
+            it.copy(data = JsonObject(it.data + ("userReadingDataEntities" to JsonArray(listOf(reading)))))
+        }
         val plan = MigrationPlanner.plan(MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID), tw)
         assertTrue(plan.hasRecoverableData)
-        val recovered = plan.snapshot.data.getValue("userReadingDataEntities").jsonArray.single().jsonObject
-        assertEquals("-999999999-01-01T00:00", recovered.getValue("lastReadTime").jsonPrimitive.content)
-        assertEquals("linovelib-v3:11", recovered.getValue("lastReadChapterId").jsonPrimitive.content)
-        assertEquals(1.0, recovered.getValue("readingProgress").jsonPrimitive.double, 0.0)
-        assertEquals(setOf("linovelib-v3:11"), recovered.getValue("currentChapterReadingProgressMap").jsonObject.keys)
+        val retained = plan.snapshot.data.getValue("userReadingDataEntities").jsonArray.single().jsonObject
+        assertEquals(java.time.LocalDateTime.MIN.toString(), retained.getValue("lastReadTime").jsonPrimitive.content)
+        assertEquals(-1, retained.getValue("totalReadTime").jsonPrimitive.int)
+        assertEquals("", retained.getValue("lastReadChapterId").jsonPrimitive.content)
+        assertEquals("", retained.getValue("lastReadChapterTitle").jsonPrimitive.content)
+        assertEquals(0.0, retained.getValue("readingProgress").jsonPrimitive.double, 0.0)
+        assertEquals(buildJsonObject { put("linovelib-v3:11", 0.8) }, retained["currentChapterReadingProgressMap"])
+        assertEquals(buildJsonObject { put("linovelib-v3:11", 1.0) }, retained["maxChapterReadingProgressMap"])
+    }
+
+    @Test fun invalidRecordTimesAreSkippedOnTheShrunkHost() {
+        val record = buildJsonObject {
+            put("bookId", "1"); put("date", "2026-10-11"); put("reads", 3); put("seconds", 200)
+            put("firstSeen", "invalid-time"); put("lastSeen", "12:00")
+        }
+        val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {
+            it.copy(data = JsonObject(it.data + ("bookRecordEntities" to JsonArray(listOf(record)))))
+        }
+        val plan = MigrationPlanner.plan(MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID), tw)
+        assertFalse(plan.hasRecoverableData)
+        assertTrue(plan.snapshot.data.getValue("bookRecordEntities").jsonArray.isEmpty())
     }
 
     @Test fun recoverableTextWithUnsupportedFieldsLoadsOnTheActualHost() {

@@ -136,10 +136,62 @@ class MigrationSnapshotCodecTest {
         }
     }
 
-    @Test fun missingTablesAndMalformedRowsDoNotHideOtherRecoverableData() {
-        val data = JsonObject(mapOf(
-            "webBookDataSourceId" to JsonPrimitive(MigrationData.TW_SOURCE_ID),
+    @Test fun twMissingAnyRequiredTableIsRejectedDespiteOtherRecoverableData() {
+        val base = codec.read(fixture("tw-snapshot.cbor"), MigrationData.TW_SOURCE_ID).snapshot.data
+        MigrationData.TABLES.forEach { name ->
+            val incomplete = JsonObject(base - name)
+            val error = assertThrows(IllegalArgumentException::class.java) {
+                MigrationSnapshotCodec.decode(cborBytes(incomplete))
+            }
+            assertEquals("源快照实体列表缺失或类型非法：$name", error.message)
+        }
+    }
+
+    @Test fun twNonArrayTablesAreRejectedInsteadOfBecomingEmpty() {
+        val base = codec.read(fixture("tw-snapshot.cbor"), MigrationData.TW_SOURCE_ID).snapshot.data
+        MigrationData.TABLES.forEach { name ->
+            listOf(JsonNull, JsonPrimitive(""), JsonObject(emptyMap())).forEach { invalid ->
+                val data = JsonObject(base + (name to invalid))
+                val error = assertThrows(IllegalArgumentException::class.java) {
+                    MigrationSnapshotCodec.decode(cborBytes(data))
+                }
+                assertEquals("源快照实体列表缺失或类型非法：$name", error.message)
+            }
+        }
+    }
+
+    @Test fun completeTwSnapshotWithEmptyTablesRemainsValid() {
+        val data = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data
+        assertEquals(data, MigrationSnapshotCodec.decode(cborBytes(data)))
+    }
+
+    @Test fun requiredTablesDoNotRequireOfficialDefaultFieldsInsideRows() {
+        val base = codec.read(fixture("tw-snapshot.cbor"), MigrationData.TW_SOURCE_ID).snapshot.data
+        val records = base.getValue("bookRecordEntities").jsonArray.map { row ->
+            JsonObject(row.jsonObject - "isFinished" - "isFavorited")
+        }
+        val shelves = base.getValue("bookshelfEntities").jsonArray.map { row ->
+            JsonObject(row.jsonObject - "sortReversed")
+        }
+        val data = JsonObject(base + mapOf(
+            "bookRecordEntities" to JsonArray(records),
+            "bookshelfEntities" to JsonArray(shelves),
+        ))
+        val decoded = MigrationSnapshotCodec.decode(cborBytes(data))
+        assertEquals(data, decoded)
+        val normalized = MigrationNormalizer.tw(MigrationSnapshot(MigrationData.TW_SOURCE_ID, decoded)).data
+        assertEquals(records.size, normalized.getValue("bookRecordEntities").jsonArray.size)
+        normalized.getValue("bookRecordEntities").jsonArray.forEach { row ->
+            assertEquals(JsonPrimitive(false), row.jsonObject["isFinished"])
+            assertEquals(JsonPrimitive(false), row.jsonObject["isFavorited"])
+        }
+        assertEquals(JsonPrimitive(false), normalized.getValue("bookshelfEntities").jsonArray.single().jsonObject["sortReversed"])
+    }
+
+    @Test fun malformedTwRowsAndUnknownTopLevelFieldsDoNotHideOtherRecoverableData() {
+        val data = JsonObject(MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data + mapOf(
             "userReadingDataEntities" to JsonArray(listOf(JsonNull, buildJsonObject { put("id", "1") })),
+            "unknownTable" to JsonArray(emptyList()),
         ))
         val decoded = MigrationSnapshotCodec.decode(cborBytes(data))
         assertEquals(MigrationData.TABLES.toSet() + "webBookDataSourceId", decoded.keys)
@@ -206,6 +258,8 @@ class MigrationSnapshotCodecTest {
                 is JsonPrimitive -> if (element == JsonNull) output.write(0xf6) else if (element.isString) {
                     val bytes = element.content.toByteArray(Charsets.UTF_8)
                     head(3, bytes.size.toLong()); output.write(bytes)
+                } else if (element.booleanOrNull != null) {
+                    output.write(if (element.boolean) 0xf5 else 0xf4)
                 } else {
                     val number = element.longOrNull
                     if (number == null) {

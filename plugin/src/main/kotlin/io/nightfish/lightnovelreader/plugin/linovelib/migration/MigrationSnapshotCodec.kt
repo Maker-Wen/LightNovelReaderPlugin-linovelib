@@ -112,7 +112,9 @@ internal class MigrationSnapshotCodec {
             return JsonObject(buildMap {
                 put("webBookDataSourceId", id)
                 MigrationData.TABLES.forEach { name ->
-                    put(name, JsonArray((data[name] as? JsonArray).orEmpty().filterIsInstance<JsonObject>()))
+                    val rows = data[name]
+                    require(rows is JsonArray) { "源快照实体列表缺失或类型非法：$name" }
+                    put(name, JsonArray(rows.filterIsInstance<JsonObject>()))
                 }
             })
         }

@@ -19,10 +19,9 @@ internal data class NormalizedMigrationSnapshot(
     val preservedPersonalRows: Map<String, List<JsonObject>>,
     val protectedKeys: Map<String, Set<String>>,
     val hasRecoverableData: Boolean,
-    val unavailableRecordTimes: Map<String, Set<String>> = emptyMap(),
 )
 
-/** Recovery never guesses personal history; only incoming TW fields may use safe defaults. */
+/** Preserves uninterpretable current personal rows and isolates invalid incoming records. */
 internal object MigrationNormalizer {
     const val ALL_KEYS = "*"
     private val numericId = Regex("[1-9][0-9]*")
@@ -115,19 +114,13 @@ internal object MigrationNormalizer {
             }
         }
         output["bookshelfBookMetadataEntities"] = JsonArray(metadata)
-        val unavailableRecordTimes = linkedMapOf<String, Set<String>>()
-        val records = personal("bookRecordEntities") { raw ->
-            if (current) strictRecord(raw) else incomingRecord(raw).also { row ->
-                val unavailable = setOf("firstSeen", "lastSeen").filter { timeOrNull(raw.text(it)) == null }.toSet()
-                if (unavailable.isNotEmpty()) unavailableRecordTimes[personalKey("bookRecordEntities", row)!!] = unavailable
-            }
-        }
+        val records = personal("bookRecordEntities") { if (current) strictRecord(it) else incomingRecord(it) }
         output["bookRecordEntities"] = JsonArray(records)
         val daily = personal("dailyCountEntities") { raw ->
             validDate(raw.requiredText("date")); MigrationPlanner.decodeHours(raw.requiredText("timeCount")); raw
         }
         output["dailyCountEntities"] = JsonArray(daily)
-        val reading = personal("userReadingDataEntities") { if (current) strictReading(it) else incomingReading(it) }
+        val reading = personal("userReadingDataEntities") { readingRow(it, incoming = !current) }
         output["userReadingDataEntities"] = JsonArray(reading)
         val userData = personal("userDataEntities") { if (current) strictUserData(it) else incomingUserData(it) }
         output["userDataEntities"] = JsonArray(userData)
@@ -135,7 +128,7 @@ internal object MigrationNormalizer {
         if (current) output["formattingRuleEntities"] = JsonArray(rows.getValue("formattingRuleEntities"))
         val data = JsonObject(output)
         return NormalizedMigrationSnapshot(data, preserved.mapValues { it.value.toList() },
-            protected.mapValues { it.value.toSet() }, containsRecoverableData(data), unavailableRecordTimes)
+            protected.mapValues { it.value.toSet() }, containsRecoverableData(data))
     }
 
     private fun information(raw: JsonObject): JsonObject {
@@ -187,34 +180,20 @@ internal object MigrationNormalizer {
     }
 
     private fun incomingRecord(raw: JsonObject): JsonObject {
-        bookId(raw.requiredText("bookId")); validDate(raw.requiredText("date"))
-        val first = timeOrNull(raw.text("firstSeen")); val last = timeOrNull(raw.text("lastSeen"))
-        return raw.with("reads" to JsonPrimitive(raw.integer("reads")?.takeIf { it >= 0 } ?: 0),
-            "seconds" to JsonPrimitive(raw.integer("seconds")?.takeIf { it >= 0 } ?: 0),
-            "isFinished" to JsonPrimitive(raw.boolean("isFinished") ?: false),
-            "isFavorited" to JsonPrimitive(raw.boolean("isFavorited") ?: false),
-            "firstSeen" to JsonPrimitive((first ?: last ?: LocalTime.MIN).toString()),
-            "lastSeen" to JsonPrimitive((last ?: first ?: LocalTime.MIN).toString()))
+        strictRecord(raw)
+        return raw.with("isFinished" to JsonPrimitive(raw.requiredBoolean("isFinished", false)),
+            "isFavorited" to JsonPrimitive(raw.requiredBoolean("isFavorited", false)),
+            "firstSeen" to JsonPrimitive(validTime(raw.requiredText("firstSeen")).toString()),
+            "lastSeen" to JsonPrimitive(validTime(raw.requiredText("lastSeen")).toString()))
     }
 
-    private fun strictReading(raw: JsonObject): JsonObject {
+    private fun readingRow(raw: JsonObject, incoming: Boolean): JsonObject {
         bookId(raw.requiredText("id")); validDateTime(raw.requiredText("lastReadTime")); raw.requiredText("lastReadChapterTitle")
         requireData(raw.requiredInt("totalReadTime") >= -1, "累计阅读秒数非法")
-        progress(raw["readingProgress"], false)
+        progress(raw["readingProgress"])
         return raw.with("lastReadChapterId" to JsonPrimitive(chapterId(raw.requiredText("lastReadChapterId"), true)),
-            "currentChapterReadingProgressMap" to progressMap(raw.requiredObject("currentChapterReadingProgressMap"), false),
-            "maxChapterReadingProgressMap" to progressMap(raw.requiredObject("maxChapterReadingProgressMap"), false))
-    }
-
-    private fun incomingReading(raw: JsonObject): JsonObject {
-        bookId(raw.requiredText("id"))
-        return raw.with("lastReadTime" to JsonPrimitive(dateTimeOrNull(raw.text("lastReadTime"))?.toString() ?: LocalDateTime.MIN.toString()),
-            "lastReadChapterId" to JsonPrimitive(attempt { chapterId(raw.text("lastReadChapterId").orEmpty(), true) } ?: ""),
-            "lastReadChapterTitle" to JsonPrimitive(raw.text("lastReadChapterTitle").orEmpty()),
-            "totalReadTime" to JsonPrimitive(raw.integer("totalReadTime")?.takeIf { it >= -1 } ?: -1),
-            "readingProgress" to (attempt { progress(raw["readingProgress"], true) } ?: JsonPrimitive(0.0)),
-            "currentChapterReadingProgressMap" to progressMap(raw["currentChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), true),
-            "maxChapterReadingProgressMap" to progressMap(raw["maxChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), true))
+            "currentChapterReadingProgressMap" to progressMap(raw.requiredObject("currentChapterReadingProgressMap"), incoming),
+            "maxChapterReadingProgressMap" to progressMap(raw.requiredObject("maxChapterReadingProgressMap"), incoming))
     }
 
     private fun strictUserData(raw: JsonObject): JsonObject {
@@ -259,19 +238,19 @@ internal object MigrationNormalizer {
     private fun progressMap(raw: JsonObject, incoming: Boolean): JsonObject {
         val result = linkedMapOf<String, JsonElement>()
         raw.forEach { (rawId, rawValue) ->
-            val pair = if (incoming) attempt { chapterId(rawId) to progress(rawValue, true) }
-                else chapterId(rawId) to progress(rawValue, false)
+            val pair = if (incoming) attempt { chapterId(rawId) to progress(rawValue) }
+                else chapterId(rawId) to progress(rawValue)
             pair?.let { (id, value) -> result[id] = value }
         }
         return JsonObject(result)
     }
 
-    private fun progress(raw: JsonElement?, incoming: Boolean): JsonPrimitive {
+    private fun progress(raw: JsonElement?): JsonPrimitive {
         val primitive = raw as? JsonPrimitive ?: fail("阅读进度不是数值")
         val value = primitive.takeUnless { it.isString }?.doubleOrNull ?: fail("阅读进度不是数值")
         requireData(value.isFinite(), "阅读进度不是有限数值")
-        if (!incoming) requireData(value in 0.0..1.0, "阅读进度超出范围")
-        return if (value in 0.0..1.0) primitive else JsonPrimitive(value.coerceIn(0.0, 1.0))
+        requireData(value in 0.0..1.0, "阅读进度超出范围")
+        return primitive
     }
 
     private fun body(raw: JsonObject): JsonObject {

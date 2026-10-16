@@ -101,10 +101,7 @@ internal object MigrationPlanner {
         output["bookshelfEntities"] = shelfResult.first.asArray()
         output["bookshelfBookMetadataEntities"] = shelfResult.second.asArray()
         output["bookRecordEntities"] = mergeKeyed(target.rows("bookRecordEntities"), old.rows("bookRecordEntities"),
-            { it.string("bookId") + "\u0000" + it.string("date") }) { a, b ->
-            val unavailable = oldState.unavailableRecordTimes[MigrationNormalizer.personalKey("bookRecordEntities", b)].orEmpty()
-            mergeRecord(a, b, unavailable)
-        }.asArray()
+            { it.string("bookId") + "\u0000" + it.string("date") }, ::mergeRecord).asArray()
         output["dailyCountEntities"] = mergeKeyed(target.rows("dailyCountEntities"), old.rows("dailyCountEntities"),
             { it.string("date") }) { a, b ->
             val left = decodeHours(a.string("timeCount")); val right = decodeHours(b.string("timeCount"))
@@ -197,15 +194,13 @@ internal object MigrationPlanner {
         return data.with("userDataEntities" to userData.asArray())
     }
 
-    private fun mergeRecord(a: JsonObject, b: JsonObject, unavailableTimes: Set<String>): JsonObject = a.with(
+    private fun mergeRecord(a: JsonObject, b: JsonObject): JsonObject = a.with(
         "reads" to JsonPrimitive(sumIntOrCurrent(a.int("reads"), b.int("reads"))),
         "seconds" to JsonPrimitive(sumIntOrCurrent(a.int("seconds"), b.int("seconds"))),
         "isFinished" to JsonPrimitive(a.bool("isFinished", false) || b.bool("isFinished", false)),
         "isFavorited" to JsonPrimitive(a.bool("isFavorited", false) || b.bool("isFavorited", false)),
-        "firstSeen" to if ("firstSeen" in unavailableTimes) a.required("firstSeen")
-            else JsonPrimitive(minOf(time(a.string("firstSeen")), time(b.string("firstSeen"))).toString()),
-        "lastSeen" to if ("lastSeen" in unavailableTimes) a.required("lastSeen")
-            else JsonPrimitive(maxOf(time(a.string("lastSeen")), time(b.string("lastSeen"))).toString()),
+        "firstSeen" to JsonPrimitive(minOf(time(a.string("firstSeen")), time(b.string("firstSeen"))).toString()),
+        "lastSeen" to JsonPrimitive(maxOf(time(a.string("lastSeen")), time(b.string("lastSeen"))).toString()),
     )
 
     private fun mergeReading(a: JsonObject, b: JsonObject): JsonObject {
