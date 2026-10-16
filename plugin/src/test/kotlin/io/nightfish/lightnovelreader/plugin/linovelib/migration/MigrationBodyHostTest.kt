@@ -11,9 +11,9 @@ class MigrationBodyHostTest {
     @Test fun malformedTwDatesRecoverOnTheShrunkHostWithoutLosingContinuation() {
         val reading = buildJsonObject {
             put("id", "1"); put("lastReadTime", "not-a-time"); put("totalReadTime", 10)
-            put("readingProgress", 1.2); put("lastReadChapterId", "11"); put("lastReadChapterTitle", "continue")
-            put("currentChapterReadingProgressMap", buildJsonObject { put("11", 1.2); put("broken", 0.5) })
-            put("maxChapterReadingProgressMap", buildJsonObject { put("11", 1.2) })
+            put("readingProgress", 1.2); put("lastReadChapterId", "linovelib-v3:11"); put("lastReadChapterTitle", "continue")
+            put("currentChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 1.2); put("broken", 0.5) })
+            put("maxChapterReadingProgressMap", buildJsonObject { put("linovelib-v3:11", 1.2) })
         }
         val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {
             it.copy(data = JsonObject(it.data + ("userReadingDataEntities" to JsonArray(listOf(reading)))))
@@ -45,7 +45,7 @@ class MigrationBodyHostTest {
     private fun migratedData(id: String, data: JsonObject): JsonObject {
         val content = buildJsonObject { put("components", JsonArray(listOf(buildJsonObject { put("id", id); put("data", data) }))) }
         val body = buildJsonObject {
-            put("id", "11"); put("title", "chapter"); put("content", content.toString())
+            put("id", "linovelib-v3:11"); put("title", "chapter"); put("content", content.toString())
             put("lastChapter", ""); put("nextChapter", "")
         }
         val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {

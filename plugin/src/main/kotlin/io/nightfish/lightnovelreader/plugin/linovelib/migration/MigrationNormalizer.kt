@@ -92,11 +92,11 @@ internal object MigrationNormalizer {
         }
         val information = keyedCaches(rows.getValue("bookInformationEntities"), "id", ::information) { it.text("title").orEmpty().isNotBlank() }
         output["bookInformationEntities"] = JsonArray(information)
-        val chapters = aliases(rows.getValue("chapterInformationEntities"), { row ->
+        val chapters = keyedCaches(rows.getValue("chapterInformationEntities"), "id", { row ->
             row.with("id" to JsonPrimitive(chapterId(row.requiredText("id"))), "title" to JsonPrimitive(row.text("title").orEmpty()))
         }) { true }
         output["chapterInformationEntities"] = JsonArray(chapters)
-        val bodies = aliases(rows.getValue("chapterContentEntities"), ::body, ::hasBody)
+        val bodies = keyedCaches(rows.getValue("chapterContentEntities"), "id", ::body, ::hasBody)
         output["chapterContentEntities"] = JsonArray(bodies)
         val volumes = volumes(rows.getValue("volumeEntities"), chapters)
         output["volumeEntities"] = JsonArray(volumes)
@@ -202,8 +202,8 @@ internal object MigrationNormalizer {
         requireData(raw.requiredInt("totalReadTime") >= -1, "累计阅读秒数非法")
         progress(raw["readingProgress"], false)
         return raw.with("lastReadChapterId" to JsonPrimitive(chapterId(raw.requiredText("lastReadChapterId"), true)),
-            "currentChapterReadingProgressMap" to progressMap(raw.requiredObject("currentChapterReadingProgressMap"), false, false),
-            "maxChapterReadingProgressMap" to progressMap(raw.requiredObject("maxChapterReadingProgressMap"), true, false))
+            "currentChapterReadingProgressMap" to progressMap(raw.requiredObject("currentChapterReadingProgressMap"), false),
+            "maxChapterReadingProgressMap" to progressMap(raw.requiredObject("maxChapterReadingProgressMap"), false))
     }
 
     private fun incomingReading(raw: JsonObject): JsonObject {
@@ -213,8 +213,8 @@ internal object MigrationNormalizer {
             "lastReadChapterTitle" to JsonPrimitive(raw.text("lastReadChapterTitle").orEmpty()),
             "totalReadTime" to JsonPrimitive(raw.integer("totalReadTime")?.takeIf { it >= -1 } ?: -1),
             "readingProgress" to (attempt { progress(raw["readingProgress"], true) } ?: JsonPrimitive(0.0)),
-            "currentChapterReadingProgressMap" to progressMap(raw["currentChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), false, true),
-            "maxChapterReadingProgressMap" to progressMap(raw["maxChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), true, true))
+            "currentChapterReadingProgressMap" to progressMap(raw["currentChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), true),
+            "maxChapterReadingProgressMap" to progressMap(raw["maxChapterReadingProgressMap"] as? JsonObject ?: JsonObject(emptyMap()), true))
     }
 
     private fun strictUserData(raw: JsonObject): JsonObject {
@@ -256,19 +256,12 @@ internal object MigrationNormalizer {
         return raw.with("group" to JsonPrimitive(raw.text("group").orEmpty()), "value" to JsonPrimitive(cleaned))
     }
 
-    private fun progressMap(raw: JsonObject, maximum: Boolean, incoming: Boolean): JsonObject {
+    private fun progressMap(raw: JsonObject, incoming: Boolean): JsonObject {
         val result = linkedMapOf<String, JsonElement>()
-        val priorities = mutableMapOf<String, Int>()
         raw.forEach { (rawId, rawValue) ->
             val pair = if (incoming) attempt { chapterId(rawId) to progress(rawValue, true) }
                 else chapterId(rawId) to progress(rawValue, false)
-            pair?.let { (id, value) ->
-                val rank = aliasRank(rawId)
-                if (maximum && ((result[id] as? JsonPrimitive)?.doubleOrNull ?: -1.0) < value.doubleOrNull!! ||
-                    !maximum && rank < (priorities[id] ?: Int.MAX_VALUE)) {
-                    result[id] = value; priorities[id] = rank
-                }
-            }
+            pair?.let { (id, value) -> result[id] = value }
         }
         return JsonObject(result)
     }
@@ -318,18 +311,6 @@ internal object MigrationNormalizer {
     }
 
     private fun hasBody(raw: JsonObject): Boolean = ((Json.parseToJsonElement(raw.requiredText("content")) as JsonObject)["components"] as? JsonArray)?.isNotEmpty() == true
-
-    private fun aliases(input: List<JsonObject>, transform: (JsonObject) -> JsonObject, useful: (JsonObject) -> Boolean): List<JsonObject> {
-        val result = linkedMapOf<String, JsonObject>()
-        val priorities = mutableMapOf<String, Int>()
-        input.forEach { raw -> attempt { transform(raw) }?.let { row ->
-            val id = row.requiredText("id"); val rank = aliasRank(raw.requiredText("id")); val old = result[id]
-            if (old == null || useful(row) && !useful(old) || useful(row) == useful(old) && rank < priorities.getValue(id)) {
-                result[id] = row; priorities[id] = rank
-            }
-        } }
-        return result.values.toList()
-    }
 
     private fun keyedCaches(input: List<JsonObject>, key: String, transform: (JsonObject) -> JsonObject, useful: (JsonObject) -> Boolean): List<JsonObject> {
         val result = linkedMapOf<String, JsonObject>()
@@ -404,7 +385,6 @@ internal object MigrationNormalizer {
     private fun JsonObject.with(vararg fields: Pair<String, JsonElement>) = JsonObject(toMutableMap().apply { putAll(fields) })
     private fun bookId(id: String) { requireData(numericId.matches(id), "不支持的书籍 ID：$id") }
     private fun chapterId(id: String, allowEmpty: Boolean = false) = MigrationPlanner.normalizeChapterId(id, allowEmpty)
-    private fun aliasRank(id: String) = when { id.startsWith("linovelib-v3:") -> 0; id.startsWith("linovelib-v2:") -> 1; else -> 2 }
     private fun commaList(value: String) = if (value.isBlank()) emptyList() else value.split(',').map(String::trim).also {
         requireData(it.all(String::isNotEmpty), "列表包含空记录")
     }

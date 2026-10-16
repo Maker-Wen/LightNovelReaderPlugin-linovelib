@@ -17,6 +17,7 @@ import java.time.LocalTime
 internal object MigrationPlanner {
     private val json = Json
     private val numericId = Regex("[1-9][0-9]*")
+    private val chapterIdPattern = Regex("linovelib-v3:[1-9][0-9]*")
     private val base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
     fun plan(
@@ -162,13 +163,8 @@ internal object MigrationPlanner {
 
     fun normalizeChapterId(id: String, allowEmpty: Boolean = false): String {
         if (allowEmpty && id.isBlank()) return ""
-        val website = when {
-            id.startsWith("linovelib-v3:") -> id.removePrefix("linovelib-v3:")
-            id.startsWith("linovelib-v2:") -> id.removePrefix("linovelib-v2:")
-            else -> id
-        }
-        checkData(numericId.matches(website), "不支持的章节 ID：$id")
-        return "linovelib-v3:$website"
+        checkData(chapterIdPattern.matches(id), "不支持的章节 ID：$id")
+        return id
     }
 
     private fun excludeProtectedIncoming(data: JsonObject, target: NormalizedMigrationSnapshot): JsonObject {
