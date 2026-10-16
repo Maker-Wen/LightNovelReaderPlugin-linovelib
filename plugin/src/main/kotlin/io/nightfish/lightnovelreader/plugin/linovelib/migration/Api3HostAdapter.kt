@@ -70,20 +70,10 @@ internal class Api3HostAdapter(
             inherits(it.javaClass, HOST + "data.local.room.LightNovelReaderDatabase")
         }
         val helper = room.javaClass.getMethod("getOpenHelper").invoke(room)
-        // R8 renames the framework helper methods; select the precise database-returning contract.
-        val wrappers = helper.javaClass.methods.filter { method ->
-            method.parameterCount == 0 && method.returnType != Void.TYPE && method.returnType.interfaces.isNotEmpty() &&
-                method.returnType.declaredFields.any { it.type == SQLiteDatabase::class.java }
-        }
-        val supportDb = checkNotNull(when {
-            wrappers.size == 1 -> wrappers.single().invoke(helper)
-            else -> {
-                // The declared return type is the shared SupportSQLiteDatabase interface.
-                val writable = helper.javaClass.methods.filter { it.parameterCount == 0 && it.name in setOf("getWritableDatabase", "u") }
-                require(writable.size == 1) { "无法识别宿主 Room 连接" }
-                writable.single().invoke(helper)
-            }
-        })
+        // u is the official API 3 R8 name of getWritableDatabase.
+        val writable = helper.javaClass.methods.filter { it.parameterCount == 0 && it.name in setOf("getWritableDatabase", "u") }
+        require(writable.size == 1) { "无法识别宿主 Room 连接" }
+        val supportDb = checkNotNull(writable.single().invoke(helper))
         database = fields(supportDb.javaClass).filter { it.type == SQLiteDatabase::class.java }
             .map { it.getAccessible(supportDb) as SQLiteDatabase }.single()
         require(database.isOpen && !database.isReadOnly && database.version == 17) { "不支持的宿主数据库" }
@@ -306,8 +296,6 @@ internal class Api3HostAdapter(
         componentMethod.isAccessible = true
         val component = checkNotNull(componentMethod.invoke(application))
         val managerClass = Class.forName(HOST + "data.local.LocalDataManager", false, context.classLoader)
-        component.javaClass.methods.singleOrNull { it.parameterCount == 0 && it.returnType == managerClass }
-            ?.let { it.isAccessible = true; return checkNotNull(it.invoke(component)) }
         // G is the shared official API 3 scoped LocalDataManager binding. No provider scanning.
         val providerField = fields(component.javaClass).singleOrNull { it.name == "localDataManagerProvider" || it.name == "G" }
             ?: error("宿主 Hilt 图中未找到源数据管理器")

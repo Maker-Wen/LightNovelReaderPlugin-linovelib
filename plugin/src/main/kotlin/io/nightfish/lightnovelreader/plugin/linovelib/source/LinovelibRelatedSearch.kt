@@ -107,21 +107,10 @@ internal class LinovelibRelatedExpandedPageDataSource(
 }
 
 internal object LinovelibRelatedNavigation {
-    private val expandedRouteClassNames = listOf(
-        "io.nightfish.lightnovelreader.api.Route\$Main\$Explore\$Expanded",
-        "indi.dmzz_yyhyy.lightnovelreader.ui.navigation.Route\$Main\$Explore\$Expanded"
-    )
-
     fun createExpandedRoute(classLoader: ClassLoader?, pageId: String): Any {
         val loader = classLoader ?: ClassLoader.getSystemClassLoader()
-        expandedRouteClassNames.forEach { className ->
-            val route = runCatching {
-                Class.forName(className, true, loader)
-                    .getConstructor(String::class.java)
-                    .newInstance(pageId)
-            }.getOrNull()
-            if (route != null) return route
-        }
-        error("No compatible LightNovelReader expanded-page route was found")
+        return Class.forName("io.nightfish.lightnovelreader.api.Route\$Main\$Explore\$Expanded", true, loader)
+            .getConstructor(String::class.java)
+            .newInstance(pageId)
     }
 }

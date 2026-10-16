@@ -6,7 +6,7 @@ import org.junit.Test
 class LinovelibChapterIdsTest {
     @Test
     fun appIdUsesTheReleasedV3Namespace() {
-        listOf("61960", "linovelib-v2:61960", "linovelib-v3:61960").forEach { id ->
+        listOf("61960", "linovelib-v3:61960").forEach { id ->
             assertEquals("linovelib-v3:61960", LinovelibChapterIds.forApp(id))
         }
     }
@@ -14,7 +14,6 @@ class LinovelibChapterIdsTest {
     @Test
     fun websiteIdRemovesInternalVersionPrefix() {
         assertEquals("61960", LinovelibChapterIds.forWebsite("linovelib-v3:61960"))
-        assertEquals("61960", LinovelibChapterIds.forWebsite("linovelib-v2:61960"))
         assertEquals("61960", LinovelibChapterIds.forWebsite("61960"))
     }
 
@@ -27,8 +26,8 @@ class LinovelibChapterIdsTest {
     }
 
     @Test
-    fun nonVersionedIdsKeepTheirValueUnderTheAppPrefix() {
-        listOf("chapter-one", "linovelib-v4:61960").forEach { id ->
+    fun unsupportedPrefixesAndOtherIdsKeepTheirValueUnderTheAppPrefix() {
+        listOf("chapter-one", "linovelib-v2:61960", "linovelib-v4:61960").forEach { id ->
             assertEquals(id, LinovelibChapterIds.forWebsite(id))
             assertEquals("linovelib-v3:$id", LinovelibChapterIds.forApp(id))
         }
