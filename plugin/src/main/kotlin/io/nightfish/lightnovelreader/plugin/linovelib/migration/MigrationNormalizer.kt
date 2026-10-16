@@ -18,7 +18,6 @@ internal data class NormalizedMigrationSnapshot(
     val data: JsonObject,
     val preservedPersonalRows: Map<String, List<JsonObject>>,
     val protectedKeys: Map<String, Set<String>>,
-    val hasRecoverableData: Boolean,
 )
 
 /** Preserves uninterpretable current personal rows and isolates invalid incoming records. */
@@ -114,7 +113,7 @@ internal object MigrationNormalizer {
             }
         }
         output["bookshelfBookMetadataEntities"] = JsonArray(metadata)
-        val records = personal("bookRecordEntities") { if (current) strictRecord(it) else incomingRecord(it) }
+        val records = personal("bookRecordEntities") { recordRow(it, incoming = !current) }
         output["bookRecordEntities"] = JsonArray(records)
         val daily = personal("dailyCountEntities") { raw ->
             validDate(raw.requiredText("date")); MigrationPlanner.decodeHours(raw.requiredText("timeCount")); raw
@@ -128,7 +127,7 @@ internal object MigrationNormalizer {
         if (current) output["formattingRuleEntities"] = JsonArray(rows.getValue("formattingRuleEntities"))
         val data = JsonObject(output)
         return NormalizedMigrationSnapshot(data, preserved.mapValues { it.value.toList() },
-            protected.mapValues { it.value.toSet() }, containsRecoverableData(data))
+            protected.mapValues { it.value.toSet() })
     }
 
     private fun information(raw: JsonObject): JsonObject {
@@ -171,20 +170,17 @@ internal object MigrationNormalizer {
             "systemUpdateReminder" to JsonPrimitive(raw.boolean("systemUpdateReminder") ?: false))
     }
 
-    private fun strictRecord(raw: JsonObject): JsonObject {
+    private fun recordRow(raw: JsonObject, incoming: Boolean): JsonObject {
         bookId(raw.requiredText("bookId")); validDate(raw.requiredText("date"))
         requireData(raw.requiredInt("reads") >= 0 && raw.requiredInt("seconds") >= 0, "阅读统计不能为负数")
-        raw.requiredBoolean("isFinished", false); raw.requiredBoolean("isFavorited", false)
-        validTime(raw.requiredText("firstSeen")); validTime(raw.requiredText("lastSeen"))
-        return raw
-    }
-
-    private fun incomingRecord(raw: JsonObject): JsonObject {
-        strictRecord(raw)
-        return raw.with("isFinished" to JsonPrimitive(raw.requiredBoolean("isFinished", false)),
-            "isFavorited" to JsonPrimitive(raw.requiredBoolean("isFavorited", false)),
-            "firstSeen" to JsonPrimitive(validTime(raw.requiredText("firstSeen")).toString()),
-            "lastSeen" to JsonPrimitive(validTime(raw.requiredText("lastSeen")).toString()))
+        val finished = raw.requiredBoolean("isFinished", false)
+        val favorited = raw.requiredBoolean("isFavorited", false)
+        val firstSeen = validTime(raw.requiredText("firstSeen"))
+        val lastSeen = validTime(raw.requiredText("lastSeen"))
+        return if (!incoming) raw else raw.with("isFinished" to JsonPrimitive(finished),
+            "isFavorited" to JsonPrimitive(favorited),
+            "firstSeen" to JsonPrimitive(firstSeen.toString()),
+            "lastSeen" to JsonPrimitive(lastSeen.toString()))
     }
 
     private fun readingRow(raw: JsonObject, incoming: Boolean): JsonObject {
@@ -308,7 +304,7 @@ internal object MigrationNormalizer {
             attempt {
                 requireData(raw.requiredText("volumeId").isNotBlank(), "卷 ID 为空")
                 requireData(raw.requiredInt("index") >= 0, "卷顺序无效")
-                val ids = raw.requiredStringList("chapterIds").map { chapterId(it) }
+                val ids = raw.requiredStringList("chapterIds")
                 requireData(ids.size == ids.distinct().size && chapterIds.containsAll(ids), "目录章节无效")
                 raw.with("chapterIds" to ids.strings(), "volumeTitle" to JsonPrimitive(raw.text("volumeTitle").orEmpty()))
             }.also { if (it == null) rejected += book }

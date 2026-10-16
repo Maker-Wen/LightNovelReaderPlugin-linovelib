@@ -261,9 +261,11 @@ internal class Api3HostAdapter(
         assertStorageIdentity()
         if (database.inTransaction()) MigrationCompletion.Unknown else inTransaction {
             val source = selectedSource()
+            if (source != MigrationData.CURRENT_SOURCE_ID && source != originalSource) return@inTransaction MigrationCompletion.Unknown
+            val completion = activeReceipt()
             when {
-                source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() == MigrationReceiptStatus.Present -> MigrationCompletion.Present
-                source == originalSource && activeReceipt() == MigrationReceiptStatus.Absent -> MigrationCompletion.Absent
+                source == MigrationData.CURRENT_SOURCE_ID && completion == MigrationReceiptStatus.Present -> MigrationCompletion.Present
+                source == originalSource && completion == MigrationReceiptStatus.Absent -> MigrationCompletion.Absent
                 else -> MigrationCompletion.Unknown
             }
         }

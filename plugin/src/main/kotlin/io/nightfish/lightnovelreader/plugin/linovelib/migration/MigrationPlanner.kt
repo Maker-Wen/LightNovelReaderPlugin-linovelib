@@ -25,8 +25,6 @@ internal object MigrationPlanner {
         tw: MigrationSnapshot,
         onProgress: (Int, Int) -> Unit = { _, _ -> },
     ): MigrationPlan {
-        checkData(current.sourceId == MigrationData.CURRENT_SOURCE_ID, "当前源标识不匹配")
-        checkData(tw.sourceId == MigrationData.TW_SOURCE_ID, "TW 源标识不匹配")
         val targetState = MigrationNormalizer.current(current)
         val oldState = MigrationNormalizer.tw(tw)
         val target = targetState.data
@@ -135,7 +133,8 @@ internal object MigrationPlanner {
         if (snapshot.sourceId == MigrationData.TW_SOURCE_ID) MigrationNormalizer.tw(snapshot) else MigrationNormalizer.current(snapshot)
     }
 
-    fun hasRecoverableData(snapshot: MigrationSnapshot): Boolean = MigrationNormalizer.tw(snapshot).hasRecoverableData
+    fun hasRecoverableData(snapshot: MigrationSnapshot): Boolean =
+        MigrationNormalizer.containsRecoverableData(MigrationNormalizer.tw(snapshot).data)
 
     /** Excludes disposable caches and preferences; ordering does not affect identity. */
     fun personalFingerprint(snapshot: MigrationSnapshot): String {

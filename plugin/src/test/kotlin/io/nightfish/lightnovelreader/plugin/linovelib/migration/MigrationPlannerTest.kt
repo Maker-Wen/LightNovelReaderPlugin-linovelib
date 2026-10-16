@@ -15,6 +15,50 @@ import org.junit.Test
 
 class MigrationPlannerTest {
     @Test
+    fun rejectsSnapshotsUsedForTheWrongSourceRole() {
+        val current = snapshot(MigrationData.CURRENT_SOURCE_ID)
+        val tw = snapshot(MigrationData.TW_SOURCE_ID)
+        rejects { MigrationPlanner.plan(tw, tw) }
+        rejects { MigrationPlanner.plan(current, current) }
+        rejects { MigrationPlanner.plan(snapshot(123), tw) }
+        rejects { MigrationPlanner.plan(current, snapshot(123)) }
+        rejects { MigrationPlanner.hasRecoverableData(current) }
+    }
+
+    @Test
+    fun preservesCurrentRecordRepresentationWhileNormalizingIncomingDefaultsAndTimes() {
+        val currentRow = JsonObject(record("1", 1, 10, "11:00:00", "12:00:00") - setOf("isFinished", "isFavorited"))
+        val incomingRow = JsonObject(currentRow + ("bookId" to JsonPrimitive("2")))
+        val current = snapshot(MigrationData.CURRENT_SOURCE_ID, "bookRecordEntities" to listOf(currentRow))
+        val tw = snapshot(MigrationData.TW_SOURCE_ID, "bookRecordEntities" to listOf(incomingRow))
+        val before = tw.data.toString()
+        val rows = MigrationPlanner.plan(current, tw).snapshot.data.rows("bookRecordEntities")
+        assertEquals(currentRow, rows.first())
+        assertEquals(JsonObject(incomingRow + mapOf(
+            "isFinished" to JsonPrimitive(false), "isFavorited" to JsonPrimitive(false),
+            "firstSeen" to JsonPrimitive("11:00"), "lastSeen" to JsonPrimitive("12:00"),
+        )), rows.last())
+        assertEquals(before, tw.data.toString())
+    }
+
+    @Test
+    fun rejectsMissingDuplicateAndNonStringCatalogReferencesWithoutDroppingOtherBooks() {
+        listOf(
+            JsonArray(listOf(JsonPrimitive("linovelib-v3:99"))),
+            JsonArray(listOf(JsonPrimitive("linovelib-v3:11"), JsonPrimitive("linovelib-v3:11"))),
+            JsonArray(listOf(JsonPrimitive(11))),
+        ).forEach { references ->
+            val invalid = JsonObject(volume("1", "invalid", emptyList()) + ("chapterIds" to references))
+            val tw = snapshot(MigrationData.TW_SOURCE_ID,
+                "volumeEntities" to listOf(invalid, volume("2", "valid", listOf("linovelib-v3:21"))),
+                "chapterInformationEntities" to listOf(chapter("linovelib-v3:11", "first"), chapter("linovelib-v3:21", "second")))
+            val result = MigrationPlanner.plan(snapshot(MigrationData.CURRENT_SOURCE_ID), tw).snapshot.data
+            assertEquals(listOf("valid"), result.rows("volumeEntities").map { it.text("volumeId") })
+            assertEquals(setOf("linovelib-v3:11", "linovelib-v3:21"), result.rows("chapterInformationEntities").map { it.text("id") }.toSet())
+        }
+    }
+
+    @Test
     fun preservesCurrentWholeCatalogAndSupplementsIndividualBodiesWithoutTextConversion() {
         val current = snapshot(MigrationData.CURRENT_SOURCE_ID,
             "bookInformationEntities" to listOf(info("1", "当前资料")),
