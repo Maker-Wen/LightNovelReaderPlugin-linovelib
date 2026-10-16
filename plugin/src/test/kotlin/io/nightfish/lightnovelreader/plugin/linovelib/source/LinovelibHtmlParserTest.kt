@@ -96,17 +96,15 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun exploreFallbackParsesAllValidBooksWithoutDisplayLimits() {
-        val html = """<section class="module"><h2 class="module-title">Empty</h2></section>""" +
-            (1..40).joinToString("") { exploreBook(it) } + exploreBook(1, "Duplicate title") +
-            """<a href="/novel/999.html"> </a><a href="/invalid.html">Invalid</a>"""
-
-        val row = parser.parseExploreRows(html).single()
-
-        assertEquals("Home", row.title)
-        assertEquals((1..40).map(Int::toString), row.books.map { it.id })
-        assertEquals((1..40).map { "Book $it" }, row.books.map { it.title })
-        assertEquals(null, row.expandedUrl)
+    fun exploreRowsIgnorePageLinksWithoutValidModules() {
+        val links = (1..40).joinToString("") { exploreBook(it) }
+        listOf(
+            links,
+            """<section class="module"><h2 class="module-title">Empty</h2></section>""" + links,
+            """<section class="module">$links</section>"""
+        ).forEach { html ->
+            assertTrue(parser.parseExploreRows(html).isEmpty())
+        }
     }
 
     private fun exploreBook(id: Int, title: String = "Book $id") =
@@ -384,7 +382,81 @@ class LinovelibHtmlParserTest {
             chapter.blocks
         )
         assertEquals("原始書名", searchRow.books.single().title)
-        assertEquals("作家名字", searchRow.books.single().author)
+        assertEquals("Author 作家名字", searchRow.books.single().author)
+    }
+
+    @Test
+    fun listBookMetadataPreservesEnglishAuthorTextWithoutGuessingMissingAuthors() {
+        val row = requireNotNull(parser.parseListPage(
+            """
+                <ol class="book-ol">
+                  <li class="book-li"><a class="book-layout" href="/novel/1.html">The Author Returns</a></li>
+                  <li class="book-li"><a class="book-layout" href="/novel/2.html">
+                    <h4 class="book-title">Second Book</h4><p class="book-author">Author: Writer</p>
+                  </a></li>
+                  <li class="book-li"><a class="book-layout" href="/novel/3.html">
+                    <h4 class="book-title">Third Book</h4><p class="book-author"></p><p>Author: Unrelated text</p>
+                  </a></li>
+                </ol>
+            """.trimIndent()
+        ))
+
+        assertEquals(listOf("The Author Returns", "Second Book", "Third Book"), row.books.map { it.title })
+        assertEquals(listOf("", "Author: Writer", ""), row.books.map { it.author })
+    }
+
+    @Test
+    fun authorNodesPreserveLiteralPrefixesAndPunctuation() {
+        listOf("作者: 作家名字", "作者：作家名字", "Author: Writer", ": 作家名字", "：作家名字", "作家名字")
+            .forEach { author ->
+                val listRow = requireNotNull(parser.parseListPage(
+                    """<a class="book-layout" href="/novel/1.html">
+                      <h4 class="book-title">書名</h4><p class="book-author">$author</p>
+                    </a>"""
+                ))
+                val exploreRow = parser.parseExploreRows(
+                    """<section class="module"><h2 class="module-title">Books</h2>
+                      <a class="module-slide-a" href="/novel/1.html"><h4 class="module-slide-caption">書名</h4>
+                        <p class="module-slide-author"><span class="clip">作者：</span><span class="gray">$author</span></p>
+                      </a>
+                    </section>"""
+                ).single()
+                assertEquals(author, listRow.books.single().author)
+                assertEquals(author, exploreRow.books.single().author)
+            }
+    }
+
+    @Test
+    fun authorsKeepWhitespaceNotNormalizedByTheirDomTextAccessors() {
+        // Synthetic boundary case: these spaces survive Jsoup text extraction but Kotlin trim removes them.
+        val author = "\u2003作家名字\u2003"
+        val row = requireNotNull(parser.parseListPage(
+            """<a class="book-layout" href="/novel/1.html">
+              <h4 class="book-title">書名</h4><p class="book-author">$author</p>
+            </a>"""
+        ))
+        assertEquals(author, row.books.single().author)
+    }
+
+    @Test
+    fun missingAuthorNodesDoNotUseModuleLabelsAsNames() {
+        val row = parser.parseExploreRows(
+            """<section class="module"><h2 class="module-title">Books</h2>
+              <a class="module-slide-a" href="/novel/1.html"><h4 class="module-slide-caption">書名</h4>
+                <p class="module-slide-author"><span class="clip">作者：Unrelated label</span></p>
+              </a>
+            </section>"""
+        ).single()
+        assertEquals("", row.books.single().author)
+    }
+
+    @Test
+    fun plainTextBookTitlesStillRemoveChineseAuthorLabels() {
+        val plainTextRow = requireNotNull(parser.parseListPage(
+            """<a class="book-layout" href="/novel/1.html">top1 書名 作者：作家名字</a>"""
+        ))
+        assertEquals("書名", plainTextRow.books.single().title)
+        assertEquals("", plainTextRow.books.single().author)
     }
 
     @Test
@@ -415,12 +487,12 @@ class LinovelibHtmlParserTest {
               <a class="module-slide-a" href="/novel/1.html">
                 <img data-src="/files/article/image/0/1/1s.jpg" alt="High School DxD" />
                 <div class="module-slide-caption">High School DxD</div>
-                <div class="module-slide-author"><span class="gray">Ichiei Ishibumi</span></div>
+                <div class="module-slide-author"><span class="clip">作者：</span><span class="gray">Ichiei Ishibumi</span></div>
               </a>
               <a class="book-layout" href="/novel/2.html">
                 <img src="/files/article/image/0/2/2s.jpg" />
                 <div class="book-title">Another Novel</div>
-                <div class="book-author">Author Tester</div>
+                <div class="book-author"><svg class="icon icon-human" role="img" title="Tester"><use xlink:href="#icon-human"></use></svg>Tester</div>
               </a>
             </section>
         """.trimIndent()
@@ -515,7 +587,7 @@ class LinovelibHtmlParserTest {
                 <a href="/novel/20.html" class="book-layout">
                   <img data-src="/files/article/image/0/20/20s.jpg" />
                   <h4 class="book-title">Complete Book</h4>
-                  <p class="book-author">${"\u4f5c\u8005"} Writer</p>
+                  <p class="book-author"><svg class="icon icon-human"><title>作者</title><use xlink:href="#icon-human"></use></svg>Writer</p>
                 </a>
               </li>
             </ol>

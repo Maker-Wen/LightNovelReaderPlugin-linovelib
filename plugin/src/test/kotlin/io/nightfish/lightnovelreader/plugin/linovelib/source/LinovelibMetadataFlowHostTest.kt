@@ -55,16 +55,15 @@ class LinovelibMetadataFlowHostTest {
     }
 
     @Test
-    fun recommendationFallbackRecordsOnlyItsDisplayedSummaries() = runBlocking {
+    fun recommendationWithoutModulesDoesNotDisplayOrRecordPageLinks() = runBlocking {
         val metadata = LinovelibMetadataStore()
         val provider = exploreProvider((1..13).joinToString("") { row(it) }, metadata)
-        val rows = provider.exploreTapPageDataSourceMap.values.single { it.title == "推荐" }
-            .getRowsFlow().toList().last()
+        val emissions = provider.exploreTapPageDataSourceMap.values.single { it.title == "推荐" }
+            .getRowsFlow().toList()
 
-        assertEquals("Home", rows.single().title)
-        assertEquals((1..12).map(Int::toString), rows.single().bookList.map { it.id })
-        assertEquals("Book 12", metadata.fallbackBookInformation("12")?.title)
-        assertNull(metadata.fallbackBookInformation("13"))
+        assertTrue(emissions.isNotEmpty())
+        assertTrue(emissions.all { it.isEmpty() })
+        (1..13).forEach { id -> assertNull(metadata.fallbackBookInformation("$id")) }
         assertEquals(setOf(LinovelibExplorePageProvider.WENKU_PAGE_ID), provider.exploreExpandedPageDataSourceMap.keys)
     }
 
@@ -208,6 +207,6 @@ class LinovelibMetadataFlowHostTest {
         LinovelibSearchProvider(load, { LinovelibSearchResponse("${LinovelibUrls.HOST}/search.html", rows) },
             LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata)
 
-    private fun row(id: Int) = """<a class="book-layout" href="/novel/$id.html"><span class="book-title">Book $id</span><span class="book-author">Writer</span></a>"""
+    private fun row(id: Int) = """<a class="book-layout" href="/novel/$id.html"><span class="book-title">Book $id</span><span class="book-author"><svg class="icon icon-human"><title>作者</title><use xlink:href="#icon-human"></use></svg>Writer</span></a>"""
     private fun detail(title: String) = """<h1 class="book-title">$title</h1><span class="authorname"><a href="/author/a.html">Author</a></span>"""
 }

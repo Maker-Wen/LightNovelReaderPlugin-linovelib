@@ -215,17 +215,7 @@ class LinovelibHtmlParser(
             }
             .filter { it.books.isNotEmpty() }
 
-        if (rows.isNotEmpty()) return rows
-
-        val fallbackBooks = document
-            .select("a[href*=/novel/][href$=.html]")
-            .mapNotNull(::parseExploreBook)
-            .distinctBy { it.id }
-        return if (fallbackBooks.isEmpty()) {
-            emptyList()
-        } else {
-            listOf(ParsedExploreRow("Home", fallbackBooks))
-        }
+        return rows
     }
 
     fun parseRankingRows(html: String): List<ParsedExploreRow> {
@@ -311,17 +301,8 @@ class LinovelibHtmlParser(
             ?: cleanExploreTitle(element.text())
         if (title.isBlank()) return null
 
-        val author = element.selectFirst(".module-slide-author .gray, .book-author, .module-slide-author")
-            ?.text()
-            ?.let(::cleanAuthor)
-            .orEmpty()
-            .ifBlank {
-                Regex("""\bAuthor\s*[: ]\s*(\S+)""")
-                    .find(element.text())
-                    ?.groupValues
-                    ?.getOrNull(1)
-                    .orEmpty()
-            }
+        val author = element.selectFirst(".module-slide-author .gray")?.text()
+            ?: element.selectFirst(".book-author")?.ownText().orEmpty()
         val coverUrl = image
             ?.attr("data-src")
             ?.ifBlank { image.attr("data-original") }
@@ -433,15 +414,6 @@ class LinovelibHtmlParser(
         text.trim()
             .replace(Regex("""^top\d+\s*""", RegexOption.IGNORE_CASE), "")
             .substringBefore(" \u4f5c\u8005")
-            .substringBefore(" Author")
-            .trim()
-
-    private fun cleanAuthor(text: String): String =
-        text.trim()
-            .removePrefix("Author")
-            .removePrefix("\u4f5c\u8005")
-            .removePrefix(":")
-            .removePrefix("\uff1a")
             .trim()
 
     private fun cleanContentText(text: String): String {
