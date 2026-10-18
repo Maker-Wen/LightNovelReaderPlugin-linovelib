@@ -451,15 +451,6 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun plainTextBookTitlesStillRemoveChineseAuthorLabels() {
-        val plainTextRow = requireNotNull(parser.parseListPage(
-            """<a class="book-layout" href="/novel/1.html">top1 書名 作者：作家名字</a>"""
-        ))
-        assertEquals("書名", plainTextRow.books.single().title)
-        assertEquals("", plainTextRow.books.single().author)
-    }
-
-    @Test
     fun parseChapterContentResolvesImagesAgainstContentHost() {
         val chapter = parser.parseChapterContent(
             chapterId = "10",
@@ -536,13 +527,14 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseRankingRowsReadsCategoryLists() {
+    fun parseRankingRowsReadsLinkTitlesWithCssRankingNumbers() {
         val html = """
+            <style>.fl-content-li::before { content: counter(bookrank) "."; }</style>
             <div class="category-list">
               <a class="fl-header"><div class="fl-header-l">Monthly</div></a>
               <ul class="fl-content">
-                <li><a href="/novel/10.html">Ranked Book</a></li>
-                <li><a href="/novel/11.html">Second Book</a></li>
+                <li class="fl-content-li"><a href="/novel/10.html">Ranked Book</a></li>
+                <li class="fl-content-li"><a href="/novel/11.html">Second Book</a></li>
               </ul>
             </div>
         """.trimIndent()

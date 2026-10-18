@@ -75,7 +75,7 @@ class LinovelibExplorePageProvider internal constructor(
     }
 
     fun registerRelatedPage(tag: String): String {
-        val displayTag = tag.trim().ifEmpty { "Related" }
+        val displayTag = tag.trim()
         val baseId = "$RELATED_PAGE_ID-${Integer.toHexString(displayTag.hashCode())}"
         synchronized(definitionLock) {
             val targetUrl = metadata.relatedTarget(displayTag)

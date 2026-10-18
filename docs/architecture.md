@@ -6,13 +6,14 @@
 
 ## 模块与入口
 
-工程只有一个 `plugin` Gradle 模块，面向 API 3。宿主 API 使用 `compileOnly`，由实际阅读器提供，避免插件打包第二份宿主类型；KSP 生成插件与数据源注册清单。只注册一个可见的 Linovelib 数据源；TW 是本地迁入输入，不另注册兼容源，以免用户数据继续分散在两个源中。
+工程只有一个 `plugin` Gradle 模块，面向 API 3。宿主 API 使用 `compileOnly`，由实际阅读器提供，避免插件打包第二份宿主类型；KSP 生成插件入口清单；插件 `onLoad()` 通过公开 API 注册适配后的数据源，`onUnload()` 显式注销。只注册一个可见的 Linovelib 数据源；TW 是本地迁入输入，不另注册兼容源，以免用户数据继续分散在两个源中。
 
 当前单源工程按请求、解析、页面会话和宿主适配等具体职责拆分，足以明确状态归属并验证调用边界。增加多模块、Repository / UseCase 或通用网络、分页、缓存框架，应先说明现有结构无法处理的实际复杂度或复用需求；仅为了增加层次而重建结构，会扩大迁移和回归范围。
 
 | 代码入口 | 负责什么 | 状态归属 |
 | --- | --- | --- |
-| [LinovelibPlugin](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/LinovelibPlugin.kt) | 插件生命周期，接入 TW 迁入控制器 | 插件实例 |
+| [LinovelibPlugin](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/LinovelibPlugin.kt) | 插件生命周期、数据源注册与注销，接入 TW 迁入控制器 | 插件实例 |
+| [LinovelibHostDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHostDataSource.kt) | 按真实宿主接口分发标签回调，其余调用原样委托 | 同一数据源的动态代理 |
 | [LinovelibWebDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibWebDataSource.kt) | 装配组件，适配宿主接口，编排正文加载 | 数据源实例的宿主 Cache、加载检查任务 |
 | [LinovelibHttpClient](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHttpClient.kt) | HTML 请求、搜索验证、Cookie、重试和可用性检查 | 一个数据源的 HTTP 会话 |
 | [LinovelibSearchProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchProvider.kt) | 搜索识别、结果事件及宿主对象更新 | 单次搜索已展示的可变书籍对象 |
@@ -95,7 +96,7 @@ WebDataSource 装配同一个 BookDetails 和 MetadataStore 供普通详情与�
 
 - 搜索首批与详情摘要回退都生成 `作者：姓名` 标签，过滤空标签并去重。
 - 未知日期转成 `LocalDateTime.MIN`，由宿主显示为 `-`；真实日期使用当天零点。
-- 当前出版社只写入 `publishingHouse` 字段，关联 URL 保存在元数据中，没有加入可点击的 `tags`。旧正式 API 3 宿主 `30458c` 的 `DetailScreen` 对原生出版社使用空点击回调，仅标签执行导航；出版社入口缺失曾作为 P2 暂缓修复。此项依据源码调用链，未独立进行设备复测，也未证明最新宿主仍有相同表现；后续可恢复插件入口或配套修复宿主，验收边界见 [README 已知限制](../README.md#已知限制)。
+- 当前出版社只写入 `publishingHouse` 字段，关联 URL 保存在元数据中，没有加入可点击的 `tags`。官方 `1.2.3c` 的 `DetailScreen` 对原生出版社使用空点击回调；2026-10-18 模拟器确认点击不跳转，本轮保持现状，见 [README 已知限制](../README.md#已知限制)。
 
 宿主 Cache 与 MetadataStore 各自独立：前者配置为每类 256 项、6 小时，后者按每个索引最多 256 项、最近写入顺序淘汰。首页单次推荐或排行展示最多 96 个书目位置；后续搜索、分页或其他栏目写入仍可淘汰旧摘要，不保证当前页面的摘要长期保留。配置入口是 [LinovelibDataSourceConfiguration](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibDataSourceConfiguration.kt)，不能把两个存储的时效语义混为一谈。
 
@@ -127,6 +128,8 @@ WebDataSource 装配同一个 BookDetails 和 MetadataStore 供普通详情与�
 
 公开的 `LinovelibPlugin` 注入构造、`LinovelibWebDataSource(Context)` 构造和官方快照格式保持兼容。包名、源 ID、书籍与卷 ID、`linovelib-v3:` 章节编号及 `linovelib/chapter-images` 目录保持既有规则；这些标识关联插件发现和已有用户数据，内部重构不能顺带改名。
 
-导航保留 API 3 的 Route 反射适配，避免直接链接宿主中不可用的类；[构建配置](../plugin/build.gradle.kts) 检查已知不兼容的宿主 API。编译和插件自身的 ABI 检查不替代实际宿主设备验收，新增依赖尤其要检查最终 DEX 与实际宿主运行结果。
+官方 API 3 会混淆导航参数类型，直接实现 Maven API 的 `progressBookTagClick(String, NavController)` 无法覆盖发行包回调。`LinovelibHostDataSource` 以宿主实际接口创建动态代理，标签调用转交同一 `LinovelibWebDataSource` 的关联页逻辑，其余方法委托原实例并解包反射异常；数据源不再使用 `@WebDataSource` 自动注册，避免绕过代理。
 
-宿主刷新与结果展示的历史调用边界见本文的 [分页会话](#分页会话) 和 [解析、元数据与映射](#解析元数据与映射)。主题弹窗、标签回调、连续滚动和出版社入口的已知问题及验证范围见 [README 已知限制](../README.md#已知限制)。已验证和未覆盖的范围统一见 [开发与验证](development.md#最近验收基线)。
+导航保留 API 3 的 Route 反射适配，并从真实回调的第二参数类型中唯一匹配 `static void(Controller, Object)`，这是官方内置 Wenku8 标签入口实际使用的导航方法。`1.2.2a`、`1.2.3`、`1.2.3c` 发行包均已核对该描述符；不依赖混淆后的类名或方法名，也不猜测其他签名。[构建配置](../plugin/build.gradle.kts) 检查已知不兼容的宿主 API。编译和插件自身的 ABI 检查不替代实际宿主设备验收，新增依赖尤其要检查最终 DEX 与实际宿主运行结果。
+
+宿主刷新与结果展示的历史调用边界见本文的 [分页会话](#分页会话) 和 [解析、元数据与映射](#解析元数据与映射)。主题弹窗与出版社入口的已知问题及作者／标签导航验证范围见 [README 已知限制](../README.md#已知限制)。已验证和未覆盖的范围统一见 [开发与验证](development.md#最近验收基线)。

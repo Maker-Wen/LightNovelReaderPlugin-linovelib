@@ -2,7 +2,6 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import android.content.Context
 import android.net.Uri
-import androidx.navigation.NavController
 import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterContent
@@ -14,7 +13,6 @@ import io.nightfish.lightnovelreader.api.content.builder.simpleText
 import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
-import io.nightfish.lightnovelreader.api.web.WebDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
 import io.nightfish.lightnovelreader.api.web.search.SearchProvider
 import kotlinx.coroutines.CoroutineScope
@@ -32,10 +30,6 @@ import java.net.URI
 internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
 
 @Suppress("unused")
-@WebDataSource(
-    name = "Linovelib",
-    provider = "linovelib.com"
-)
 class LinovelibWebDataSource internal constructor(
     private val context: Context,
     private val metadata: LinovelibMetadataStore,
@@ -152,11 +146,11 @@ class LinovelibWebDataSource internal constructor(
         context: Context
     ): Uri? = findVolumeCoverUri(volume, volumeChapterContentMap)?.let(Uri::parse)
 
-    override fun progressBookTagClick(tag: String, navController: NavController) {
+    internal fun openRelatedPage(tag: String, navController: Any?) {
+        if (tag.isBlank()) return
         val pageId = linovelibExplorePageProvider.registerRelatedPage(tag)
         diagnostics.info("RELATED_NAV_START", mapOf("tag" to tag, "pageId" to pageId))
-        val route = LinovelibRelatedNavigation.createExpandedRoute(navController.javaClass.classLoader, pageId)
-        navController.navigate(route)
+        LinovelibRelatedNavigation.navigate(checkNotNull(navController), pageId)
         diagnostics.info("RELATED_NAV_DONE", mapOf("mode" to "route", "pageId" to pageId))
     }
 
@@ -310,7 +304,7 @@ internal fun findVolumeCoverUri(
     volumeChapterContentMap: Map<String, ChapterContent>
 ): String? = volume.chapters
     .asSequence()
-    .filter { chapter -> chapter.title.trim().lowercase() in ILLUSTRATION_TITLES }
+    .filter { chapter -> chapter.title.trim() in ILLUSTRATION_TITLES }
     .mapNotNull { chapter -> volumeChapterContentMap[chapter.id] }
     .flatMap { chapter -> chapter.content["components"]?.jsonArray.orEmpty().asSequence() }
     .mapNotNull { component ->
@@ -324,7 +318,4 @@ internal fun findVolumeCoverUri(
     }
     .firstOrNull()
 
-private val ILLUSTRATION_TITLES = setOf(
-    "插图", "插圖", "插画", "插畫", "彩页", "彩頁", "彩图", "彩圖",
-    "illustration", "illustrations"
-)
+private val ILLUSTRATION_TITLES = setOf("插图", "插圖")

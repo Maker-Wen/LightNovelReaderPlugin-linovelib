@@ -107,9 +107,28 @@ internal class LinovelibRelatedExpandedPageDataSource(
 }
 
 internal object LinovelibRelatedNavigation {
-    fun createExpandedRoute(classLoader: ClassLoader?, pageId: String): Any {
-        val loader = classLoader ?: ClassLoader.getSystemClassLoader()
-        return Class.forName("io.nightfish.lightnovelreader.api.Route\$Main\$Explore\$Expanded", true, loader)
+    private val navigateMethod by lazy {
+        val controllerType = LinovelibHostDataSource.tagClickMethod.parameterTypes[1]
+        // Official API 3's built-in Wenku8 tag callback uses this same route entry point.
+        // Match the verified descriptor instead of hard-coding an R8 class or method name.
+        controllerType.methods.single {
+            java.lang.reflect.Modifier.isStatic(it.modifiers) &&
+                it.returnType == Void.TYPE &&
+                it.parameterTypes.contentEquals(arrayOf(controllerType, Any::class.java))
+        }
+    }
+
+    fun navigate(controller: Any, pageId: String) {
+        val route = createExpandedRoute(checkNotNull(controller.javaClass.classLoader), pageId)
+        try {
+            navigateMethod.invoke(null, controller, route)
+        } catch (failure: java.lang.reflect.InvocationTargetException) {
+            throw failure.targetException
+        }
+    }
+
+    fun createExpandedRoute(classLoader: ClassLoader, pageId: String): Any {
+        return Class.forName("io.nightfish.lightnovelreader.api.Route\$Main\$Explore\$Expanded", true, classLoader)
             .getConstructor(String::class.java)
             .newInstance(pageId)
     }

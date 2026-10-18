@@ -45,7 +45,7 @@
 | 测试 | 入口 | 覆盖范围 |
 | --- | --- | --- |
 | JVM 测试 | `:plugin:testDebugUnitTest` | 解析、分页取消和隔离、本地 HTTP 服务、元数据淘汰、迁入规则等 |
-| Android 宿主测试 | [run-host-tests.py](../scripts/run-host-tests.py) | 实际 Android / API 3 类型下的书籍映射、搜索与元数据组合，以及迁入正文和日期兼容 |
+| Android 宿主测试 | [run-host-tests.py](../scripts/run-host-tests.py) | 实际 Android / API 3 类型下的回调分发、书籍映射、搜索与元数据组合，以及迁入正文和日期兼容 |
 
 `*HostTest` 与普通单测一起编译，但从 Gradle 的 JVM 测试执行中排除，因为它们需要真实 Android `Uri` 和宿主类型。只运行 JVM 测试不会执行这部分用例。
 
@@ -70,6 +70,7 @@ python3 scripts/run-host-tests.py --serial emulator-5556 --no-build
 
 ### 定位测试入口
 
+- 标签回调：`LinovelibHostDataSourceHostTest` 从实际宿主接口反射调用作者／标签回调，覆盖委托对象、暂停函数结果、取消传播及空标签；真实导航图与书单展示仍需 UI 点击验证。
 - 分页：`LinovelibExplorePageProviderTest`、`LinovelibPaginationSessionTest`、`LinovelibRelatedSearchTest`。
 - 列表页识别：`LinovelibListPageTest` 覆盖统一解析结果、分页信息，以及搜索和展开页的共同识别约定；栏目投影由 `LinovelibMetadataFlowHostTest` 覆盖。
 - HTTP：`LinovelibHttpClientTest`、`LinovelibHttpClientRequestTest`、`LinovelibChapterHttpTest`、`LinovelibChapterRedirectTest`。
@@ -92,8 +93,6 @@ python3 scripts/run-host-tests.py --serial emulator-5556 --no-build
 | 重开与离线阅读 | 核对书架、阅读位置、统计及正文可读性，不以出现成功弹窗代替数据核验 |
 
 每轮使用独立证据目录，保存实际报告、必要日志及数据摘要。设备专用实验脚本和原始数据库不作为公开构建依赖；已有结果与未覆盖范围见 [最近验收基线](#最近验收基线) 和 [已知验证边界](#已知验证边界)。
-
-## 最近验收基线
 
 ### 2.2.0 正式签名覆盖升级
 

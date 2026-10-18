@@ -21,23 +21,37 @@ class LinovelibSearchResponseTest {
     }
 
     @Test
-    fun `finds direct book id from canonical open graph url`() {
-        val response = LinovelibSearchResponse(
-            finalUrl = "https://www.bilinovel.com/search.html?searchkey=example",
-            html = """
-                <html><head>
-                  <meta property="og:url" content="https://www.bilinovel.com/novel/3768.html">
-                </head></html>
-            """.trimIndent()
+    fun `search page metadata does not replace the returned search results`() = runBlocking {
+        val provider = LinovelibSearchProvider(
+            htmlLoader = { error("ID search must not fetch details") },
+            searchHtmlLoader = {
+                LinovelibSearchResponse(
+                    finalUrl = "https://www.bilinovel.com/search.html?searchkey=example",
+                    html = """
+                        <html><head>
+                          <meta property="og:url" content="https://www.bilinovel.com/novel/3768.html">
+                        </head><body><ol class="book-ol"><li class="book-li">
+                          <a class="book-layout" href="/novel/1667.html"><h4 class="book-title">SAO</h4></a>
+                        </li></ol></body></html>
+                    """.trimIndent()
+                )
+            },
+            parser = parser,
+            diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
         )
 
-        assertEquals("3768", response.directBookId(parser))
+        val results = provider.searchBookIds("example").toList()
+
+        assertEquals(2, results.size)
+        assertEquals("1667", (results[0] as SearchResult.SingleBook).bookId)
+        assertTrue(results[1] is SearchResult.End)
     }
 
     @Test
-    fun `redirected search emits direct book and end`() = runBlocking {
+    fun `redirected search emits direct book and end without a second request`() = runBlocking {
+        val detailRequests = mutableListOf<String>()
         val provider = LinovelibSearchProvider(
-            htmlLoader = { "" },
+            htmlLoader = { url -> detailRequests += url; "" },
             searchHtmlLoader = {
                 LinovelibSearchResponse(
                     finalUrl = "https://www.bilinovel.com/novel/3768.html",
@@ -54,6 +68,7 @@ class LinovelibSearchResponseTest {
         assertTrue(results[0] is SearchResult.SingleBook)
         assertEquals("3768", (results[0] as SearchResult.SingleBook).bookId)
         assertTrue(results[1] is SearchResult.End)
+        assertTrue(detailRequests.isEmpty())
     }
 
     @Test

@@ -297,8 +297,7 @@ class LinovelibHtmlParser(
         val title = imageTitle
             ?.takeIf { visibleTitle.isNullOrBlank() || visibleTitle.endsWith("...") || visibleTitle.endsWith("\u2026") }
             ?: visibleTitle
-            ?: imageTitle
-            ?: cleanExploreTitle(element.text())
+            ?: element.text()
         if (title.isBlank()) return null
 
         val author = element.selectFirst(".module-slide-author .gray")?.text()
@@ -409,12 +408,6 @@ class LinovelibHtmlParser(
             .replace(Regex("\n{2,}"), "\n")
             .trim()
     }
-
-    private fun cleanExploreTitle(text: String): String =
-        text.trim()
-            .replace(Regex("""^top\d+\s*""", RegexOption.IGNORE_CASE), "")
-            .substringBefore(" \u4f5c\u8005")
-            .trim()
 
     private fun cleanContentText(text: String): String {
         val failureMarkerIndex = listOf(CONTENT_LOAD_FAILED, SIMPLIFIED_CONTENT_LOAD_FAILED)
