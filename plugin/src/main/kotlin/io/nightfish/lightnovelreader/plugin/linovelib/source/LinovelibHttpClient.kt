@@ -15,7 +15,7 @@ internal const val LINOVELIB_CONTENT_USER_AGENT = "Mozilla/5.0 (Linux; Android 1
 
 internal data class LinovelibHtmlResponse(val finalUrl: String, val html: String)
 
-internal class LinovelibHttpStatusException(val statusCode: Int, val url: String) :
+internal class LinovelibHttpStatusException(statusCode: Int, url: String) :
     IOException("HTTP $statusCode for $url")
 
 internal class LinovelibHttpClient(
@@ -34,7 +34,6 @@ internal class LinovelibHttpClient(
                 url = host,
                 userAgent = USER_AGENT,
                 referrer = host,
-                acceptLanguage = ACCEPT_LANGUAGE,
                 availabilityCheck = true
             )
             false
@@ -46,52 +45,47 @@ internal class LinovelibHttpClient(
     suspend fun loadHtml(url: String): String = executeRequest(
         url = url,
         userAgent = USER_AGENT,
-        referrer = host,
-        acceptLanguage = ACCEPT_LANGUAGE
-    ).body()
+        referrer = host
+    ).html
 
     suspend fun loadChapterPage(url: String): LinovelibHtmlResponse = executeRequest(
         url = url,
         userAgent = LINOVELIB_CONTENT_USER_AGENT,
         referrer = "${host}/",
-        acceptLanguage = ACCEPT_LANGUAGE,
         cookies = mapOf("night" to "0"),
         cacheControl = true
-    ).let { LinovelibHtmlResponse(it.url().toString(), it.body()) }
+    ).let { LinovelibHtmlResponse(it.raw.url().toString(), it.html) }
 
     suspend fun search(keyword: String): LinovelibHtmlResponse {
         val guardJs = executeRequest(
             url = "${host}/search.html?search_guard=js",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            acceptLanguage = ACCEPT_LANGUAGE,
             cacheControl = true,
             includeSessionCookies = false
         )
-        val jsToken = LinovelibSearchGuard.extractCookieValue(guardJs.body(), "jieqiSearchJs")
+        val jsToken = LinovelibSearchGuard.extractJsToken(guardJs.html)
         require(jsToken.isNotEmpty()) { "Missing jieqiSearchJs search guard cookie" }
 
         val guardCss = executeRequest(
             url = "${host}/search.html?search_guard=css",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            acceptLanguage = ACCEPT_LANGUAGE,
             cacheControl = true,
             includeSessionCookies = false
         )
-        val cssToken = guardCss.cookies()["jieqiSearchCss"].orEmpty()
+        val cssToken = guardCss.raw.cookies()["jieqiSearchCss"].orEmpty()
         require(cssToken.isNotEmpty()) { "Missing jieqiSearchCss search guard cookie" }
 
         val redeem = executeRequest(
             url = "${host}/search.html?search_guard=redeem&r=${System.currentTimeMillis()}",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            acceptLanguage = ACCEPT_LANGUAGE,
             cookies = LinovelibSearchGuard.guardCookies(jsToken, cssToken),
             cacheControl = true,
             includeSessionCookies = false
         )
-        val ticketToken = redeem.cookies()["jieqiSearchTicket"].orEmpty()
+        val ticketToken = redeem.raw.cookies()["jieqiSearchTicket"].orEmpty()
         require(ticketToken.isNotEmpty()) { "Missing jieqiSearchTicket search cookie" }
         diagnostics.info(
             "SEARCH_GUARD_OK",
@@ -103,14 +97,13 @@ internal class LinovelibHttpClient(
             url = "${host}/search.html?searchkey=$encodedKeyword",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            acceptLanguage = ACCEPT_LANGUAGE,
-            cookies = LinovelibSearchGuard.ticketCookies(ticketToken),
+            cookies = mapOf("jieqiSearchTicket" to ticketToken),
             cacheControl = true,
             includeSessionCookies = false
         )
         return LinovelibHtmlResponse(
-            finalUrl = response.url().toString(),
-            html = response.body()
+            finalUrl = response.raw.url().toString(),
+            html = response.html
         )
     }
 
@@ -118,22 +111,20 @@ internal class LinovelibHttpClient(
         url: String,
         userAgent: String,
         referrer: String,
-        acceptLanguage: String,
         cookies: Map<String, String> = emptyMap(),
         cacheControl: Boolean = false,
         includeSessionCookies: Boolean = true,
         availabilityCheck: Boolean = false
-    ): Connection.Response {
+    ): DecodedResponse {
         val startedAt = System.nanoTime()
-        return try {
-            var lastNetworkError: Throwable? = null
-            for (attempt in 0 until LinovelibRequestPolicy.maxAttempts) {
+        try {
+            var attempt = 0
+            while (true) {
                 val response = try {
                     executeSingleRequest(
                         url = url,
                         userAgent = userAgent,
                         referrer = referrer,
-                        acceptLanguage = acceptLanguage,
                         cookies = cookies,
                         cacheControl = cacheControl,
                         includeSessionCookies = includeSessionCookies,
@@ -141,8 +132,6 @@ internal class LinovelibHttpClient(
                         availabilityCheck = availabilityCheck
                     )
                 } catch (throwable: Throwable) {
-                    throwable.rethrowIfCancellation()
-                    lastNetworkError = throwable
                     if (throwable !is IOException || attempt == LinovelibRequestPolicy.maxAttempts - 1) {
                         throw throwable
                     }
@@ -156,11 +145,11 @@ internal class LinovelibHttpClient(
                             "reason" to throwable.javaClass.simpleName
                         )
                     )
+                    attempt++
                     continue
                 }
 
                 val html = response.body()
-                val inspection = diagnostics.inspectHtml(html)
                 val successful = diagnostics.isSuccessfulHttpStatus(response.statusCode())
                 diagnostics.info(
                     if (successful) "HTTP_OK" else "HTTP_STATUS_ERROR",
@@ -168,13 +157,13 @@ internal class LinovelibHttpClient(
                         "requested" to url,
                         "final" to response.url().toString(),
                         "status" to response.statusCode(),
-                        "chars" to inspection.characters,
+                        "chars" to html.length,
                         "elapsedMs" to elapsedMilliseconds(startedAt),
-                        "loadFailure" to inspection.hasLoadFailure
+                        "loadFailure" to diagnostics.hasLoadFailure(html)
                     )
                 )
                 if (successful) {
-                    return response
+                    return DecodedResponse(response, html)
                 }
 
                 val retryDelay = LinovelibRequestPolicy.retryDelayMillis(
@@ -194,8 +183,8 @@ internal class LinovelibHttpClient(
                         "delayMs" to retryDelay
                     )
                 )
+                attempt++
             }
-            throw lastNetworkError ?: IOException("Request attempts exhausted for $url")
         } catch (throwable: Throwable) {
             throwable.rethrowIfCancellation()
             diagnostics.error(
@@ -214,7 +203,6 @@ internal class LinovelibHttpClient(
         url: String,
         userAgent: String,
         referrer: String,
-        acceptLanguage: String,
         cookies: Map<String, String>,
         cacheControl: Boolean,
         includeSessionCookies: Boolean,
@@ -222,20 +210,17 @@ internal class LinovelibHttpClient(
         availabilityCheck: Boolean
     ): Connection.Response = requestCoordinator.execute(
         cooldownAfter = { result ->
-            if (attempt == LinovelibRequestPolicy.maxAttempts - 1) {
+            // A final 429 still throttles subsequent resources after retries are exhausted.
+            if (attempt == LinovelibRequestPolicy.maxAttempts - 1 && result.getOrNull()?.statusCode() != 429) {
                 null
             } else {
                 result.fold(
                     onSuccess = { response ->
-                        if (diagnostics.isSuccessfulHttpStatus(response.statusCode())) {
-                            null
-                        } else {
-                            LinovelibRequestPolicy.retryDelayMillis(
-                                statusCode = response.statusCode(),
-                                retryAfter = response.header("Retry-After"),
-                                attempt = attempt
-                            )
-                        }
+                        LinovelibRequestPolicy.retryDelayMillis(
+                            statusCode = response.statusCode(),
+                            retryAfter = response.header("Retry-After"),
+                            attempt = attempt
+                        )
                     },
                     onFailure = { throwable ->
                         if (throwable is IOException) {
@@ -257,15 +242,15 @@ internal class LinovelibHttpClient(
             val connection = Jsoup.connect(url)
                 .userAgent(userAgent)
                 .header("Accept", "*/*")
-                .header("Accept-Language", acceptLanguage)
+                .header("Accept-Language", ACCEPT_LANGUAGE)
                 .referrer(referrer)
                 .cookies(requestCookies)
-                .followRedirects(true)
                 .ignoreHttpErrors(true)
-                .acceptLinovelibContentTypes()
+                .ignoreContentType(true)
                 .timeout(12_000)
             if (cacheControl) connection.header("Cache-Control", "no-cache")
-            val response = withContext(Dispatchers.IO) { connection.execute() }
+            // Buffer within the request slot before publishing cookies or availability.
+            val response = withContext(Dispatchers.IO) { connection.execute().readFully() }
             currentCoroutineContext().ensureActive()
             if (includeSessionCookies) sessionCookies.putAll(response.cookies())
             // Publish while this request still owns the slot. A late outer callback
@@ -290,6 +275,8 @@ internal class LinovelibHttpClient(
             throw throwable
         }
     }
+
+    private class DecodedResponse(val raw: Connection.Response, val html: String)
 
     private fun elapsedMilliseconds(startedAt: Long): Long =
         (System.nanoTime() - startedAt) / 1_000_000

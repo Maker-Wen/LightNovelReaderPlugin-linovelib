@@ -24,13 +24,26 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.cancellation.CancellationException
 
+// Signature fixtures exercise HTTP transport, size/MIME checks and file caching.
+// They are not complete images and do not test decoding, display or EPUB export.
 class LinovelibStoredImageTest {
+    @Test
+    fun downloadsWithTheContentSiteReferer() = runBlocking {
+        LinovelibHttpTestSite { exchange -> exchange.respond(200, "GIF89a", "image/gif") }.use { site ->
+            val image = LinovelibImageStore.downloadImage("${site.host}/image.gif")
+
+            assertEquals("${LinovelibUrls.HOST}/", site.requests.single().headers["referer"])
+            assertArrayEquals("GIF89a".toByteArray(), image.bytes)
+            assertEquals("image/gif", image.mimeType)
+        }
+    }
+
     @Test
     fun `retries only temporary http errors and stops after two attempts`() = runBlocking {
         for (status in listOf(400, 401, 403, 404, 410, 422, 408, 425, 429, 500, 503, 599)) {
             ImageServer { response(status) }.use { server ->
                 val failure = runCatching {
-                    LinovelibImageStore.downloadImage(server.url, LinovelibUrls.HOST)
+                    LinovelibImageStore.downloadImage(server.url)
                 }.exceptionOrNull()
 
                 assertTrue("HTTP $status should fail", failure is IOException)
@@ -48,7 +61,7 @@ class LinovelibStoredImageTest {
             ImageServer { attempt ->
                 if (attempt == 1) initialResponse else response(200, "GIF89a")
             }.use { server ->
-                val image = LinovelibImageStore.downloadImage(server.url, LinovelibUrls.HOST)
+                val image = LinovelibImageStore.downloadImage(server.url)
 
                 assertArrayEquals("GIF89a".toByteArray(), image.bytes)
                 assertEquals("image/gif", image.mimeType)
@@ -57,7 +70,7 @@ class LinovelibStoredImageTest {
         }
         ImageServer { brokenBody }.use { server ->
             val failure = runCatching {
-                LinovelibImageStore.downloadImage(server.url, LinovelibUrls.HOST)
+                LinovelibImageStore.downloadImage(server.url)
             }.exceptionOrNull()
 
             assertTrue(failure is IOException)
@@ -70,13 +83,13 @@ class LinovelibStoredImageTest {
         ImageServer { response(200, "GIF89a") }.use { server ->
             val download = async(start = CoroutineStart.UNDISPATCHED) {
                 runCatching {
-                    LinovelibImageStore.downloadImage(server.url, "https://example.com/\ninvalid")
+                    LinovelibImageStore.downloadImage(server.url.replaceFirst("http:", "file:"))
                 }
             }
             try {
                 assertTrue("Programming errors should fail without suspending for a retry", download.isCompleted)
                 val failure = download.await().exceptionOrNull()
-                assertTrue("Expected the original header error, got $failure", failure is IllegalArgumentException)
+                assertTrue("Expected the original connection type error, got $failure", failure is ClassCastException)
                 assertEquals(0, server.requests.get())
             } finally {
                 download.cancelAndJoin()
@@ -91,7 +104,7 @@ class LinovelibStoredImageTest {
             firstRequest.complete(Unit)
             response(503)
         }.use { server ->
-            val download = async { LinovelibImageStore.downloadImage(server.url, LinovelibUrls.HOST) }
+            val download = async { LinovelibImageStore.downloadImage(server.url) }
             withTimeout(5_000) { firstRequest.await() }
             download.cancel()
             val failure = runCatching { download.await() }.exceptionOrNull()
@@ -102,7 +115,50 @@ class LinovelibStoredImageTest {
     }
 
     @Test
-    fun `stores protected image once and reuses local file uri`() = runBlocking {
+    fun downloadAcceptsSignaturePayloadAtFifteenMiBLimit() = runBlocking {
+        val limit = 15 * 1024 * 1024
+        val body = "GIF89a".padEnd(limit, 'x')
+        ImageServer { response(200, body) }.use { server ->
+            val image = LinovelibImageStore.downloadImage(server.url)
+
+            assertEquals(limit, image.bytes.size)
+            assertTrue(LinovelibImageValidation.isValid(image.bytes, image.mimeType))
+            assertEquals('x'.code.toByte(), image.bytes.last())
+            assertEquals(1, server.requests.get())
+        }
+    }
+
+    @Test
+    fun oversizedDownloadIsRejectedBeforeCachingAndLaterRequestRecovers() = runBlocking {
+        val body = "GIF89a".padEnd(15 * 1024 * 1024 + 1, 'x')
+        val directory = Files.createTempDirectory("linovelib-image-limit").toFile()
+        val failures = mutableListOf<Throwable>()
+        try {
+            ImageServer { attempt -> response(200, if (attempt <= 2) body else "GIF89a") }.use { server ->
+                val store = LinovelibImageStore(
+                    directory = directory,
+                    downloader = { LinovelibImageStore.downloadImage(server.url) },
+                    diagnostics = LinovelibDiagnostics { _, _, _, failure -> failure?.let(failures::add) }
+                )
+                val blocks = listOf(ParsedContentBlock.Image("https://img.readpai.com/size-limit.gif"))
+
+                assertTrue(store.localize(blocks).isEmpty())
+                assertEquals(2, server.requests.get())
+                assertTrue(directory.listFiles().orEmpty().isEmpty())
+                assertTrue(failures.single() is IOException)
+                assertEquals("Image response was too large", failures.single().message)
+
+                val recovered = store.localize(blocks).single() as ParsedContentBlock.Image
+                assertArrayEquals("GIF89a".toByteArray(), File(URI(recovered.url)).readBytes())
+                assertEquals(3, server.requests.get())
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `stores signature bytes reuses file uri and replaces invalid cache`() = runBlocking {
         val directory = Files.createTempDirectory("linovelib-images").toFile()
         val jpeg = byteArrayOf(0xff.toByte(), 0xd8.toByte(), 0xff.toByte(), 0x00)
         var downloads = 0
@@ -110,7 +166,7 @@ class LinovelibStoredImageTest {
             directory = directory,
             downloader = {
                 downloads++
-                DownloadedLinovelibImage(jpeg, "image/jpeg")
+                DownloadedLinovelibImage(jpeg, " \tIMAGE/JPEG; charset=binary \t")
             },
             diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
         )
@@ -124,14 +180,21 @@ class LinovelibStoredImageTest {
         assertTrue(firstUri.startsWith("file:"))
         assertEquals(firstUri, (first.last() as ParsedContentBlock.Image).url)
         assertEquals(firstUri, (second.first() as ParsedContentBlock.Image).url)
-        assertArrayEquals(jpeg, File(URI(firstUri)).readBytes())
+        val cachedFile = File(URI(firstUri))
+        assertArrayEquals(jpeg, cachedFile.readBytes())
         assertEquals(1, downloads)
+
+        cachedFile.writeBytes(byteArrayOf(0))
+        val recovered = store.localize(blocks)
+        assertEquals(first, recovered)
+        assertArrayEquals(jpeg, cachedFile.readBytes())
+        assertEquals(2, downloads)
         directory.deleteRecursively()
         Unit
     }
 
     @Test
-    fun `omits image when local storage fails so export does not retry remote url`() = runBlocking {
+    fun `omits protected image when downloader fails`() = runBlocking {
         val directory = Files.createTempDirectory("linovelib-images").toFile()
         val store = LinovelibImageStore(
             directory = directory,
@@ -140,15 +203,38 @@ class LinovelibStoredImageTest {
         )
         val remote = "https://img.readpai.com/illustration.webp"
 
-        val result = store.localize(listOf(ParsedContentBlock.Image(remote)))
+        val text = ParsedContentBlock.Text("正文")
+        val publicImage = ParsedContentBlock.Image("https://example.com/illustration.webp")
+        val result = store.localize(listOf(text, ParsedContentBlock.Image(remote), publicImage, ParsedContentBlock.Image(remote)))
 
-        assertTrue(result.isEmpty())
+        assertEquals(listOf(text, publicImage), result)
         directory.deleteRecursively()
         Unit
     }
 
     @Test
-    fun `rejects html interception page returned with http 200`() = runBlocking {
+    fun `unavailable directory omits only protected images without downloading`() = runBlocking {
+        val directory = Files.createTempFile("linovelib-image-directory", ".file").toFile()
+        try {
+            val events = mutableListOf<String>()
+            val store = LinovelibImageStore(
+                directory = directory,
+                downloader = { error("Directory failure must stop before downloading") },
+                diagnostics = LinovelibDiagnostics { _, _, message, _ -> events += message }
+            )
+            val text = ParsedContentBlock.Text("正文")
+            val publicImage = ParsedContentBlock.Image("https://example.com/illustration.webp")
+            val protectedImage = ParsedContentBlock.Image("https://img.readpai.com/illustration.webp")
+
+            assertEquals(listOf(text, publicImage), store.localize(listOf(text, protectedImage, publicImage)))
+            assertTrue(events.single().startsWith("IMAGE_DIRECTORY_ERROR"))
+        } finally {
+            directory.delete()
+        }
+    }
+
+    @Test
+    fun rejectsHtmlPayloadFromDownloaderWithoutCreatingCache() = runBlocking {
         val directory = Files.createTempDirectory("linovelib-images").toFile()
         val store = LinovelibImageStore(
             directory = directory,

@@ -6,7 +6,7 @@ import org.jsoup.nodes.TextNode
 import java.net.URI
 import java.time.LocalDate
 
-data class ParsedBookInformation(
+internal data class ParsedBookInformation(
     val id: String,
     val title: String,
     val subtitle: String,
@@ -22,22 +22,22 @@ data class ParsedBookInformation(
     val relatedLinks: Map<String, String> = emptyMap()
 )
 
-data class ParsedCatalog(
+internal data class ParsedCatalog(
     val bookId: String,
     val volumes: List<ParsedVolume>
 )
 
-data class ParsedVolume(
+internal data class ParsedVolume(
     val title: String,
     val chapters: List<ParsedChapter>
 )
 
-data class ParsedChapter(
+internal data class ParsedChapter(
     val id: String,
     val title: String
 )
 
-data class ParsedChapterContent(
+internal data class ParsedChapterContent(
     val id: String,
     val title: String,
     val previousChapterId: String,
@@ -46,49 +46,39 @@ data class ParsedChapterContent(
     val blocks: List<ParsedContentBlock>
 )
 
-data class ParsedExploreRow(
+internal data class ParsedExploreRow(
     val title: String,
     val books: List<ParsedExploreBook>,
     val expandedUrl: String? = null
 )
 
-data class ParsedExploreBook(
+internal data class ParsedExploreBook(
     val id: String,
     val title: String,
     val author: String,
     val coverUrl: String
 )
 
-data class ParsedListPage(
+internal data class ParsedListPage(
     val books: List<ParsedExploreBook>,
     val lastPage: Int
 )
 
-sealed class ParsedContentBlock {
+internal sealed class ParsedContentBlock {
     data class Text(val text: String) : ParsedContentBlock()
     data class Image(val url: String) : ParsedContentBlock()
 }
 
-class LinovelibHtmlParser(
+internal class LinovelibHtmlParser(
     private val host: String = LinovelibUrls.HOST
 ) {
     fun parseBookInformation(id: String, html: String): ParsedBookInformation {
         val document = Jsoup.parse(html, host)
-        val meta = { property: String ->
-            document.selectFirst("meta[property=\"$property\"]")?.attr("content").orEmpty()
-        }
         val metaText = document.select(".book-detail-info .book-meta.book-layout-inline")
             .joinToString(" ") { it.text() }
-            .ifBlank {
-                document.select(".book-meta.book-layout-inline").joinToString(" ") { it.text() }
-            }
         val tagElements = document.select(".tag-small-group .tag-small")
-        val bookTagElements = tagElements
-            .filterNot { it.hasClass("orange") || it.hasClass("gray") }
         val relatedTagElements = tagElements.filterNot { it.hasClass("gray") }
-        val tags = bookTagElements
-            .map { it.text().trim() }
-            .filter { it.isNotEmpty() }
+        val tags = mutableListOf<String>()
         val publishingHouse = tagElements
             .firstOrNull { it.hasClass("orange") }
             ?.text()
@@ -96,39 +86,35 @@ class LinovelibHtmlParser(
 
         val authorElement = document.selectFirst(".authorname a")
         val author = authorElement?.text().orEmpty()
-            .ifBlank { meta("og:novel:author") }
         val authorUrl = authorElement?.absUrl("href").orEmpty()
-            .ifBlank { authorElement?.attr("href").orEmpty() }
-            .ifBlank { meta("og:novel:author_link") }
             .let(::normalizeUrl)
         val relatedLinks = buildMap {
             relatedTagElements.forEach { element ->
                 val tag = element.text().trim()
+                if (tag.isEmpty()) return@forEach
+                if (!element.hasClass("orange")) tags += tag
                 val link = element.selectFirst("a[href]") ?: return@forEach
-                val target = link.absUrl("href").ifBlank { link.attr("href") }.let(::normalizeUrl)
-                if (tag.isNotBlank() && target.isNotBlank()) put(tag, target)
+                val target = link.absUrl("href").let(::normalizeUrl)
+                if (target.isNotEmpty()) put(tag, target)
             }
         }
 
         return ParsedBookInformation(
             id = id,
-            title = document.selectFirst(".book-detail-info .book-title, .book-title")?.text().orEmpty()
-                .ifBlank { meta("og:novel:book_name") },
+            title = document.selectFirst(".book-title")?.text().orEmpty(),
             subtitle = document.selectFirst(".backupname span")?.text().orEmpty(),
-            coverUrl = normalizeUrl(meta("og:image")),
+            coverUrl = normalizeUrl(document.selectFirst("meta[property=\"og:image\"]")?.attr("content").orEmpty()),
             author = author,
             description = document.selectFirst("#bookSummary content")
                 ?.let(::htmlWithBreaksToText)
-                ?.ifBlank { null }
-                ?: meta("og:description"),
+                .orEmpty(),
             tags = tags,
-            publishingHouse = publishingHouse.ifBlank { meta("og:novel:category") },
+            publishingHouse = publishingHouse,
             wordCount = parseWordCount(metaText),
             lastUpdated = parseLastUpdated(
                 document.selectFirst(".book-status")?.text().orEmpty()
-                    .ifBlank { meta("og:novel:update_time") }
             ),
-            isComplete = STATUS_COMPLETE.containsMatchIn(metaText) || STATUS_COMPLETE.matches(meta("og:novel:status")),
+            isComplete = STATUS_COMPLETE.containsMatchIn(metaText),
             authorUrl = authorUrl,
             relatedLinks = relatedLinks
         )
@@ -143,9 +129,8 @@ class LinovelibHtmlParser(
                 val chapters = volume.select(".jsChapter a")
                     .mapNotNull { chapter ->
                         val href = chapter.attr("href")
-                        val chapterId = chapterIdFromUrl(href) ?: return@mapNotNull null
-                        val chapterTitle = chapter.selectFirst(".chapter-index")?.text()
-                            ?: chapter.text()
+                        val chapterId = chapterIdFromHref(href) ?: return@mapNotNull null
+                        val chapterTitle = chapter.selectFirst(".chapter-index")?.text().orEmpty()
                         ParsedChapter(chapterId, chapterTitle)
                     }
                 ParsedVolume(title, chapters)
@@ -156,28 +141,26 @@ class LinovelibHtmlParser(
     fun parseChapterContent(
         chapterId: String,
         html: String,
-        baseUrl: String = host,
-        restoreParagraphOrder: Boolean = false
+        baseUrl: String
     ): ParsedChapterContent {
         val document = Jsoup.parse(html, baseUrl)
-        val content = document.selectFirst("#acontent")
-        content?.select(".cgo, center, script, style, ins")?.remove()
-        val contentElements = content?.children()?.toList().orEmpty()
-        val orderedElements = if (restoreParagraphOrder) {
-            restoreParagraphs(chapterId, contentElements)
-        } else {
-            contentElements
+        val content = requireNotNull(document.selectFirst("#acontent")) {
+            "Unrecognized Linovelib chapter page: $baseUrl"
         }
+        content.select(".cgo, center, script, style, ins").remove()
+        val orderedElements = restoreParagraphs(chapterId, content.children())
         val blocks = orderedElements.flatMap(::parseContentBlocks)
         val readParams = document.select("script")
-            .joinToString("\n") { it.data() + it.html() }
+            .joinToString("\n") { it.data() }
+        val previousUrl = readParamUrl(readParams, PREVIOUS_URL)
+        val nextUrl = readParamUrl(readParams, NEXT_URL)
 
         return ParsedChapterContent(
             id = chapterId,
             title = document.selectFirst("#atitle")?.text().orEmpty(),
-            previousChapterId = readParamChapterId(readParams, "url_previous"),
-            nextChapterId = readParamChapterId(readParams, "url_next"),
-            nextPageUrl = readParamUrl(readParams, "url_next"),
+            previousChapterId = chapterIdFromHref(previousUrl).orEmpty(),
+            nextChapterId = chapterIdFromHref(nextUrl).orEmpty(),
+            nextPageUrl = nextUrl,
             blocks = blocks
         )
     }
@@ -185,7 +168,7 @@ class LinovelibHtmlParser(
     private fun restoreParagraphs(chapterId: String, elements: List<Element>): List<Element> {
         val positions = elements.indices.filter { index ->
             val element = elements[index]
-            element.normalName() == "p" && element.html().replace(Regex("""\s+"""), "").isNotEmpty()
+            element.normalName() == "p" && NON_WHITESPACE.containsMatchIn(element.html())
         }
         val restoredParagraphs = LinovelibParagraphOrder.restore(
             chapterId,
@@ -200,22 +183,19 @@ class LinovelibHtmlParser(
 
     fun parseExploreRows(html: String): List<ParsedExploreRow> {
         val document = Jsoup.parse(html, host)
-        val rows = document.select(".module")
+        return document.select(".module")
             .mapNotNull { module ->
                 val title = module.selectFirst(".module-title")?.text()?.trim().orEmpty()
                 val books = module
                     .select("a.module-slide-a[href], a.book-layout[href]")
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
-                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
+                if (title.isEmpty() || books.isEmpty()) null else ParsedExploreRow(
                     title,
                     books,
                     expandedListUrl(module, ".module-header a.module-header-btn[href]")
                 )
             }
-            .filter { it.books.isNotEmpty() }
-
-        return rows
     }
 
     fun parseRankingRows(html: String): List<ParsedExploreRow> {
@@ -226,7 +206,7 @@ class LinovelibHtmlParser(
                 val books = category.select(".fl-content a[href*=/novel/]")
                     .mapNotNull(::parseExploreBook)
                     .distinctBy { it.id }
-                if (title.isBlank() || books.isEmpty()) null else ParsedExploreRow(
+                if (title.isEmpty() || books.isEmpty()) null else ParsedExploreRow(
                     title,
                     books,
                     expandedListUrl(category, "a.fl-header[href], a.fl-content-li-more[href]")
@@ -237,7 +217,7 @@ class LinovelibHtmlParser(
     /** Null means unrecognized; an empty book list means a recognized empty page. */
     fun parseListPage(html: String): ParsedListPage? {
         val document = Jsoup.parse(html, host)
-        val books = document.select("ol.book-ol .book-li a.book-layout[href], a.book-layout[href]")
+        val books = document.select("a.book-layout[href]")
             .mapNotNull(::parseExploreBook)
             .distinctBy { it.id }
         if (books.isEmpty()) {
@@ -248,43 +228,43 @@ class LinovelibHtmlParser(
         return ParsedListPage(books, parseLastPage(document))
     }
 
-    private fun expandedListUrl(element: Element, selector: String): String? = element.select(selector)
-        .asSequence()
-        .mapNotNull { link -> runCatching { URI(link.absUrl("href")) }.getOrNull() }
-        .firstOrNull { url ->
-            url.host == URI(host).host && url.scheme == "https" &&
-                (url.path.startsWith("/wenku/") ||
-                    url.path.matches(Regex("/top(?:full)?/[^/]+/\\d+\\.html")))
-        }
-        ?.toString()
+    private fun expandedListUrl(element: Element, selector: String): String? {
+        val candidates = element.select(selector).asSequence()
+            .mapNotNull { link -> runCatching { URI(link.absUrl("href")) }.getOrNull() }
+            .iterator()
+        if (!candidates.hasNext()) return null
+        val expectedHost = URI(host).host
+        return candidates.asSequence().firstOrNull { url ->
+            url.host == expectedHost && url.scheme == "https" &&
+                (url.path.startsWith("/wenku/") || TOP_PAGE.matches(url.path))
+        }?.toString()
+    }
 
     private fun parseLastPage(document: Element): Int {
         document.selectFirst("#pagelink a.last")
             ?.text()
             ?.toIntOrNull()
             ?.let { return it }
-        return Regex("""\u7b2c\d+/(\d+)\u9875""")
+        return PAGE_COUNT
             .find(document.selectFirst("#pagelink")?.text().orEmpty())
             ?.groupValues
-            ?.getOrNull(1)
+            ?.get(1)
             ?.toIntOrNull()
             ?: 1
     }
 
+    /** [keyword] is a trimmed user query or an HTTP response URL. */
     fun bookIdFromKeyword(keyword: String): String? {
-        val trimmed = keyword.trim()
-        if (trimmed.all(Char::isDigit) && trimmed.isNotEmpty()) return trimmed
-        return bookIdFromHref(trimmed)
+        if (keyword.all(Char::isDigit) && keyword.isNotEmpty()) return keyword
+        return bookIdFromHref(keyword)
     }
 
-    fun bookIdFromHref(href: String): String? {
-        return Regex("""/novel/(\d+)(?:\.html|/catalog)?""")
+    private fun bookIdFromHref(href: String): String? {
+        return BOOK_ID
             .find(href)
             ?.groupValues
-            ?.getOrNull(1)
+            ?.get(1)
     }
-
-    fun chapterIdFromHref(href: String): String? = chapterIdFromUrl(href)
 
     private fun parseExploreBook(element: Element): ParsedExploreBook? {
         val id = bookIdFromHref(element.attr("href")) ?: return null
@@ -292,32 +272,27 @@ class LinovelibHtmlParser(
         val visibleTitle = element.selectFirst(".module-slide-caption, .book-title")
             ?.text()
             ?.trim()
-            ?.ifBlank { null }
-        val imageTitle = image?.attr("alt")?.trim()?.ifBlank { null }
-        val title = imageTitle
-            ?.takeIf { visibleTitle.isNullOrBlank() || visibleTitle.endsWith("...") || visibleTitle.endsWith("\u2026") }
-            ?: visibleTitle
-            ?: element.text()
+            ?.ifEmpty { null }
+        val imageTitle = image?.attr("alt")?.trim()?.ifEmpty { null }
+        val title = visibleTitle ?: imageTitle ?: element.text()
         if (title.isBlank()) return null
 
         val author = element.selectFirst(".module-slide-author .gray")?.text()
             ?: element.selectFirst(".book-author")?.ownText().orEmpty()
         val coverUrl = image
             ?.attr("data-src")
-            ?.ifBlank { image.attr("data-original") }
             ?.ifBlank { image.attr("src") }
             ?.let(::normalizeUrl)
             .orEmpty()
-            .ifBlank { LinovelibUrls.cover(host, id) }
+            .ifEmpty { LinovelibUrls.cover(host, id) }
 
         return ParsedExploreBook(id, title, author, coverUrl)
     }
 
     private fun parseContentBlocks(element: Element): List<ParsedContentBlock> {
-        if (element.hasClass("cgo") || element.normalName() in SKIPPED_CONTENT_TAGS) return emptyList()
         if (element.normalName() == "img") {
             val sourceAttribute = if (element.attr("data-src").isNotBlank()) "data-src" else "src"
-            val src = element.absUrl(sourceAttribute).ifBlank { element.attr(sourceAttribute) }
+            val src = element.absUrl(sourceAttribute)
             return listOf(ParsedContentBlock.Image(normalizeUrl(src)))
         }
         if (element.selectFirst("img") == null) {
@@ -352,34 +327,22 @@ class LinovelibHtmlParser(
     }
 
     private fun parseWordCount(text: String): Int {
-        val match = Regex("""([\d.]+)\s*([\u842c\u4e07]?)\u5b57""").find(text) ?: return 0
+        val match = WORD_COUNT.find(text) ?: return 0
         val number = match.groupValues[1].toDoubleOrNull() ?: return 0
         val unit = match.groupValues[2]
         return if (unit.isNotEmpty()) (number * 10_000).toInt() else number.toInt()
     }
 
     private fun parseLastUpdated(text: String): LocalDate {
-        val match = Regex("""\d{4}-\d{2}-\d{2}""").find(text)
+        val match = LAST_UPDATED.find(text)
         return match?.value?.let(LocalDate::parse) ?: LinovelibDates.unknownLocalDate
     }
 
-    private fun readParamChapterId(script: String, key: String): String {
-        val url = readParamUrl(script, key)
-        return chapterIdFromUrl(url).orEmpty()
-    }
+    private fun readParamUrl(script: String, pattern: Regex): String =
+        pattern.find(script)?.groupValues?.get(2).orEmpty()
 
-    private fun readParamUrl(script: String, key: String): String =
-        Regex("""$key\s*:\s*(['"])(.*?)\1""")
-            .find(script)
-            ?.groupValues
-            ?.getOrNull(2)
-            .orEmpty()
-
-    private fun chapterIdFromUrl(url: String): String? =
-        Regex("""/novel/\d+/(\d+)(?:_\d+)?\.html""")
-            .find(url)
-            ?.groupValues
-            ?.getOrNull(1)
+    fun chapterIdFromHref(href: String): String? =
+        CHAPTER_ID.find(href)?.groupValues?.get(1)
 
     private fun normalizeUrl(url: String): String {
         if (url.isBlank()) return ""
@@ -399,13 +362,12 @@ class LinovelibHtmlParser(
                 is TextNode -> node.text().trim().takeIf { it.isNotEmpty() }?.let(parts::add)
                 is Element -> when (node.normalName()) {
                     "br" -> parts.add("\n")
-                    "p" -> node.textWithNewLines().takeIf { it.isNotBlank() }?.let(parts::add)
-                    else -> node.textWithNewLines().takeIf { it.isNotBlank() }?.let(parts::add)
+                    else -> node.textWithNewLines().takeIf { it.isNotEmpty() }?.let(parts::add)
                 }
             }
         }
         return parts.joinToString("\n")
-            .replace(Regex("\n{2,}"), "\n")
+            .replace(REPEATED_NEW_LINES, "\n")
             .trim()
     }
 
@@ -424,35 +386,36 @@ class LinovelibHtmlParser(
         }
     }
 
-    private fun trimLoadFailureTail(text: String): String {
-        val withoutMarkerTail = text.trim()
-            .replace(Regex("""(?:…|．){1,}[（(]?$|\.{3,}[（(]?$"""), "")
+    private fun trimLoadFailureTail(text: String): String =
+        text.trim()
+            .replace(LOAD_FAILURE_TAIL, "")
             .trim()
-        val lastSentenceEnd = Regex("""[。.!！？!?」』”）)]""")
-            .findAll(withoutMarkerTail)
-            .lastOrNull()
-            ?.range
-            ?.last
-        return if (lastSentenceEnd != null && lastSentenceEnd < withoutMarkerTail.lastIndex) {
-            withoutMarkerTail.substring(0, lastSentenceEnd + 1).trim()
-        } else {
-            withoutMarkerTail
-        }
-    }
 
     private fun htmlWithBreaksToText(element: Element): String =
         Jsoup.parseBodyFragment(
-            element.html().replace(Regex("(?i)<br\\s*/?>"), "\n")
+            element.html().replace(HTML_BREAK, "\n")
         ).body().wholeText()
-            .replace(Regex("[ \t]*\n[ \t]*"), "\n")
-            .replace(Regex("\n{2,}"), "\n")
+            .replace(SPACES_AROUND_NEW_LINE, "\n")
+            .replace(REPEATED_NEW_LINES, "\n")
             .trim()
 
     private companion object {
         val STATUS_COMPLETE = Regex("完[结結]")
+        val NON_WHITESPACE = Regex("""\S""")
+        val TOP_PAGE = Regex("""/top(?:full)?/[^/]+/\d+\.html""")
+        val PAGE_COUNT = Regex("""\u7b2c\d+/(\d+)\u9875""")
+        val BOOK_ID = Regex("""/novel/(\d+)""")
+        val CHAPTER_ID = Regex("""/novel/\d+/(\d+)(?:_\d+)?\.html""")
+        val WORD_COUNT = Regex("""([\d.]+)\s*([\u842c\u4e07]?)\u5b57""")
+        val LAST_UPDATED = Regex("""\d{4}-\d{2}-\d{2}""")
+        val PREVIOUS_URL = Regex("""url_previous\s*:\s*(['"])(.*?)\1""")
+        val NEXT_URL = Regex("""url_next\s*:\s*(['"])(.*?)\1""")
+        val REPEATED_NEW_LINES = Regex("\n{2,}")
+        val LOAD_FAILURE_TAIL = Regex("""(?:…|．){1,}[（(]?$|\.{3,}[（(]?$""")
+        val HTML_BREAK = Regex("""(?i)<br\s*/?>""")
+        val SPACES_AROUND_NEW_LINE = Regex("[ \t]*\n[ \t]*")
         const val CONTENT_LOAD_FAILED = "\u5167\u5bb9\u52a0\u8f09\u5931\u6557"
         const val SIMPLIFIED_CONTENT_LOAD_FAILED = "\u5185\u5bb9\u52a0\u8f7d\u5931\u8d25"
         const val MOBILE_PAGE_WARNING = "\u624b\u6a5f\u7248\u9801\u9762"
-        val SKIPPED_CONTENT_TAGS = setOf("center", "script", "style", "ins")
     }
 }

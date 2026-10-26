@@ -37,10 +37,9 @@ internal object MigrationNormalizer {
 
     /** The planner calls this again after excluding incoming rows protected by current data. */
     fun containsRecoverableData(data: JsonObject): Boolean =
-        data.rows("bookInformationEntities").any { it.text("title").orEmpty().isNotBlank() } ||
+        data.rows("bookInformationEntities").any { it.requiredText("title").isNotBlank() } ||
             data.rows("chapterInformationEntities").isNotEmpty() ||
             data.rows("chapterContentEntities").any(::hasBody) ||
-            data.rows("volumeEntities").any { it.requiredStringList("chapterIds").isNotEmpty() } ||
             data.rows("bookshelfEntities").any {
                 it.requiredStringList("allBookIds").isNotEmpty() ||
                     it.requiredText("name").let { name -> name.isNotBlank() && name != "已收藏" }
@@ -67,11 +66,13 @@ internal object MigrationNormalizer {
         val rows = MigrationData.TABLES.associateWith { snapshot.data.rows(it) }
         val selected = rows.getValue("userDataEntities").filter { it.text("path") == MigrationData.SELECTED_SOURCE }
         requireData(selected.size <= 1, "快照选中源字段重复")
-        selected.singleOrNull()?.let { row ->
+        selected.firstOrNull()?.let { row ->
             requireData(row.text("type") == "Int", "快照选中源字段类型非法")
             requireData(row.text("value")?.toIntOrNull() == snapshot.sourceId, "快照选中源与身份不匹配")
         }
-        val output = MigrationData.emptySnapshot(snapshot.sourceId).data.toMutableMap()
+        val output = MigrationData.TABLES.associateWithTo(
+            linkedMapOf<String, JsonElement>("webBookDataSourceId" to JsonPrimitive(snapshot.sourceId)),
+        ) { snapshot.data.getValue(it) }
         val preserved = linkedMapOf<String, MutableList<JsonObject>>()
         val protected = linkedMapOf<String, MutableSet<String>>()
         fun preserve(table: String, row: JsonObject) {
@@ -88,11 +89,14 @@ internal object MigrationNormalizer {
                 normalized
             }
         }
-        val information = keyedCaches(rows.getValue("bookInformationEntities"), "id", ::information) { it.text("title").orEmpty().isNotBlank() }
+        val information = keyedCaches(rows.getValue("bookInformationEntities"), "id", ::information) { it.requiredText("title").isNotBlank() }
         output["bookInformationEntities"] = JsonArray(information)
-        val chapters = keyedCaches(rows.getValue("chapterInformationEntities"), "id", { row ->
-            row.with("id" to JsonPrimitive(chapterId(row.requiredText("id"))), "title" to JsonPrimitive(row.text("title").orEmpty()))
-        }) { true }
+        val chapters = rows.getValue("chapterInformationEntities").mapNotNull { raw ->
+            attempt {
+                chapterId(raw.requiredText("id")); raw.requiredText("title")
+                raw
+            }
+        }.distinctBy { it.requiredText("id") }
         output["chapterInformationEntities"] = JsonArray(chapters)
         val bodies = keyedCaches(rows.getValue("chapterContentEntities"), "id", ::body, ::hasBody)
         output["chapterContentEntities"] = JsonArray(bodies)
@@ -100,7 +104,7 @@ internal object MigrationNormalizer {
         output["volumeEntities"] = JsonArray(volumes)
         val shelves = personal("bookshelfEntities") { if (current) strictShelf(it) else incomingShelf(it) }
         output["bookshelfEntities"] = JsonArray(shelves)
-        val shelfIds = shelves.mapNotNull { it.integer("id") }.toSet()
+        val shelfIds = shelves.map { it.requiredInt("id") }.toSet()
         val metadata = personal("bookshelfBookMetadataEntities") { raw ->
             if (current) {
                 bookId(raw.requiredText("id")); validDateTime(raw.requiredText("lastUpdate"))
@@ -108,7 +112,7 @@ internal object MigrationNormalizer {
                 raw
             } else {
                 val id = raw.requiredText("id"); bookId(id)
-                raw.with("lastUpdate" to JsonPrimitive(dateTimeOrNull(raw.text("lastUpdate"))?.toString() ?: LocalDateTime.MIN.toString()),
+                raw.with("lastUpdate" to JsonPrimitive(validDateTime(raw.requiredText("lastUpdate")).toString()),
                     "bookShelfIds" to JsonArray(shelves.filter { id in it.requiredStringList("allBookIds") }.map { JsonPrimitive(it.requiredInt("id")) }))
             }
         }
@@ -124,7 +128,7 @@ internal object MigrationNormalizer {
         val userData = personal("userDataEntities") { if (current) strictUserData(it) else incomingUserData(it) }
         output["userDataEntities"] = JsonArray(userData)
         // Formatting and ordinary preferences belong to the current installation.
-        if (current) output["formattingRuleEntities"] = JsonArray(rows.getValue("formattingRuleEntities"))
+        if (!current) output["formattingRuleEntities"] = JsonArray(emptyList())
         val data = JsonObject(output)
         return NormalizedMigrationSnapshot(data, preserved.mapValues { it.value.toList() },
             protected.mapValues { it.value.toSet() })
@@ -132,17 +136,16 @@ internal object MigrationNormalizer {
 
     private fun information(raw: JsonObject): JsonObject {
         bookId(raw.requiredText("id"))
-        val wordCount = raw["wordCount"] as? JsonObject
-        val fields = listOf("title", "subtitle", "coverUri", "author", "description", "publishingHouse")
-            .map { it to JsonPrimitive(raw.text(it).orEmpty()) }
-        return raw.with(*(fields + listOf(
-            "tags" to JsonArray((raw["tags"] as? JsonArray).orEmpty().mapNotNull { it.stringOrNull() }.map(::JsonPrimitive)),
-            "lastUpdated" to JsonPrimitive(dateTimeOrNull(raw.text("lastUpdated"))?.toString() ?: LocalDateTime.MIN.toString()),
-            "isComplete" to JsonPrimitive(raw.boolean("isComplete") ?: false),
-            "wordCount" to JsonObject(mapOf("count" to JsonPrimitive(wordCount?.integer("count")?.takeIf { it >= 0 } ?: 0),
-                "unit" to (wordCount?.text("unit")?.let(::JsonPrimitive) ?: JsonNull),
-                "unitResId" to (wordCount?.integer("unitResId")?.let(::JsonPrimitive) ?: JsonNull))),
-        )).toTypedArray())
+        listOf("title", "subtitle", "coverUri", "author", "description", "publishingHouse")
+            .forEach { raw.requiredText(it) }
+        raw.requiredStringList("tags")
+        validDateTime(raw.requiredText("lastUpdated"))
+        raw.requiredBoolean("isComplete")
+        val wordCount = raw.requiredObject("wordCount")
+        wordCount.requiredInt("count")
+        if (wordCount.getValue("unit") != JsonNull) wordCount.requiredText("unit")
+        if (wordCount.getValue("unitResId") != JsonNull) wordCount.requiredInt("unitResId")
+        return raw
     }
 
     private fun strictShelf(raw: JsonObject): JsonObject {
@@ -151,7 +154,7 @@ internal object MigrationNormalizer {
         raw.requiredBoolean("sortReversed", false); raw.requiredBoolean("autoCache"); raw.requiredBoolean("systemUpdateReminder")
         val members = raw.requiredStringList("allBookIds").also { it.forEach(::bookId) }.toSet()
         listOf("pinnedBookIds", "updatedBookIds").forEach { key ->
-            val ids = raw.requiredStringList(key).also { it.forEach(::bookId) }
+            val ids = raw.requiredStringList(key)
             requireData(members.containsAll(ids), "书架引用无效")
         }
         return raw
@@ -163,23 +166,17 @@ internal object MigrationNormalizer {
         val members = incomingIds(raw["allBookIds"])
         return raw.with("allBookIds" to members.strings(),
             "pinnedBookIds" to incomingIds(raw["pinnedBookIds"]).filter { it in members }.strings(),
-            "updatedBookIds" to incomingIds(raw["updatedBookIds"]).filter { it in members }.strings(),
-            "sortType" to JsonPrimitive(raw.text("sortType") ?: "default"),
-            "sortReversed" to JsonPrimitive(raw.boolean("sortReversed") ?: false),
-            "autoCache" to JsonPrimitive(raw.boolean("autoCache") ?: false),
-            "systemUpdateReminder" to JsonPrimitive(raw.boolean("systemUpdateReminder") ?: false))
+            "updatedBookIds" to incomingIds(raw["updatedBookIds"]).filter { it in members }.strings())
     }
 
     private fun recordRow(raw: JsonObject, incoming: Boolean): JsonObject {
         bookId(raw.requiredText("bookId")); validDate(raw.requiredText("date"))
         requireData(raw.requiredInt("reads") >= 0 && raw.requiredInt("seconds") >= 0, "阅读统计不能为负数")
-        val finished = raw.requiredBoolean("isFinished", false)
-        val favorited = raw.requiredBoolean("isFavorited", false)
+        raw.requiredBoolean("isFinished", false)
+        raw.requiredBoolean("isFavorited", false)
         val firstSeen = validTime(raw.requiredText("firstSeen"))
         val lastSeen = validTime(raw.requiredText("lastSeen"))
-        return if (!incoming) raw else raw.with("isFinished" to JsonPrimitive(finished),
-            "isFavorited" to JsonPrimitive(favorited),
-            "firstSeen" to JsonPrimitive(firstSeen.toString()),
+        return if (!incoming) raw else raw.with("firstSeen" to JsonPrimitive(firstSeen.toString()),
             "lastSeen" to JsonPrimitive(lastSeen.toString()))
     }
 
@@ -228,14 +225,18 @@ internal object MigrationNormalizer {
             }
             else -> return null
         }
-        return raw.with("group" to JsonPrimitive(raw.text("group").orEmpty()), "value" to JsonPrimitive(cleaned))
+        raw.requiredText("group")
+        return raw.with("value" to JsonPrimitive(cleaned))
     }
 
     private fun progressMap(raw: JsonObject, incoming: Boolean): JsonObject {
+        if (!incoming) {
+            raw.forEach { (id, value) -> chapterId(id); progress(value) }
+            return raw
+        }
         val result = linkedMapOf<String, JsonElement>()
         raw.forEach { (rawId, rawValue) ->
-            val pair = if (incoming) attempt { chapterId(rawId) to progress(rawValue) }
-                else chapterId(rawId) to progress(rawValue)
+            val pair = attempt { chapterId(rawId) to progress(rawValue) }
             pair?.let { (id, value) -> result[id] = value }
         }
         return JsonObject(result)
@@ -244,45 +245,39 @@ internal object MigrationNormalizer {
     private fun progress(raw: JsonElement?): JsonPrimitive {
         val primitive = raw as? JsonPrimitive ?: fail("阅读进度不是数值")
         val value = primitive.takeUnless { it.isString }?.doubleOrNull ?: fail("阅读进度不是数值")
-        requireData(value.isFinite(), "阅读进度不是有限数值")
         requireData(value in 0.0..1.0, "阅读进度超出范围")
         return primitive
     }
 
     private fun body(raw: JsonObject): JsonObject {
+        chapterId(raw.requiredText("id")); raw.requiredText("title")
         val content = raw.requiredText("content")
         val parsed = Json.parseToJsonElement(content) as? JsonObject ?: fail("正文不是 JSON 对象")
-        val components = normalizedComponents(parsed["components"])
-        val safeContent = if (components != null && components != parsed["components"])
-            parsed.with("components" to components).toString() else content
-        return raw.with("id" to JsonPrimitive(chapterId(raw.requiredText("id"))),
-            "title" to JsonPrimitive(raw.text("title").orEmpty()),
-            "content" to JsonPrimitive(safeContent),
-            "lastChapter" to JsonPrimitive(attempt { chapterId(raw.text("lastChapter").orEmpty(), true) } ?: ""),
+        validateComponents(parsed["components"])
+        return raw.with("lastChapter" to JsonPrimitive(attempt { chapterId(raw.text("lastChapter").orEmpty(), true) } ?: ""),
             "nextChapter" to JsonPrimitive(attempt { chapterId(raw.text("nextChapter").orEmpty(), true) } ?: ""))
     }
 
-    private fun normalizedComponents(value: JsonElement?): JsonArray? {
-        if (value == null) return null
+    private fun validateComponents(value: JsonElement?) {
+        if (value == null) return
         val components = value as? JsonArray ?: fail("正文组件列表无效")
-        return JsonArray(components.map { value ->
+        components.forEach { value ->
             val component = value as? JsonObject ?: fail("正文组件不是对象")
             val id = component.requiredText("id")
             val data = component.requiredObject("data")
-            val normalizedData = when (id) {
-                "simple_text" -> componentData(data, "text")
-                "image" -> componentData(data, "uri")
-                else -> data // The host renders an error for an unknown component ID.
+            when (id) {
+                "simple_text" -> validateComponentData(data, "text")
+                "image" -> validateComponentData(data, "uri")
+                // The host renders an error for an unknown component ID.
             }
-            if (normalizedData == data) component else component.with("data" to normalizedData)
-        })
+        }
     }
 
-    private fun componentData(data: JsonObject, valueField: String): JsonObject {
+    private fun validateComponentData(data: JsonObject, valueField: String) {
         data.requiredText(valueField)
-        return JsonObject(data.filter { (field, value) ->
+        requireData(data.all { (field, value) ->
             field == valueField || field == "id" && value.stringOrNull() != null
-        })
+        }, "正文组件字段不符合宿主格式")
     }
 
     private fun hasBody(raw: JsonObject): Boolean = ((Json.parseToJsonElement(raw.requiredText("content")) as JsonObject)["components"] as? JsonArray)?.isNotEmpty() == true
@@ -306,7 +301,8 @@ internal object MigrationNormalizer {
                 requireData(raw.requiredInt("index") >= 0, "卷顺序无效")
                 val ids = raw.requiredStringList("chapterIds")
                 requireData(ids.size == ids.distinct().size && chapterIds.containsAll(ids), "目录章节无效")
-                raw.with("chapterIds" to ids.strings(), "volumeTitle" to JsonPrimitive(raw.text("volumeTitle").orEmpty()))
+                raw.requiredText("volumeTitle")
+                raw
             }.also { if (it == null) rejected += book }
         }
         valid.groupBy { it.requiredText("volumeId") }.values.filter { it.size > 1 }.forEach { duplicate ->
@@ -364,15 +360,12 @@ internal object MigrationNormalizer {
         requireData(it.all(String::isNotEmpty), "列表包含空记录")
     }
     private fun validDate(value: String): LocalDate {
-        val date = dateOrNull(value) ?: fail("日期无效")
+        val date = LocalDate.parse(value)
         requireData(date.year in 1000..9999, "日期超出宿主支持范围")
         return date
     }
-    private fun validDateTime(value: String) = dateTimeOrNull(value) ?: fail("阅读时间无效")
-    private fun validTime(value: String) = timeOrNull(value) ?: fail("阅读时刻无效")
-    private fun dateOrNull(value: String?) = value?.let { attempt { LocalDate.parse(it) } }
-    private fun dateTimeOrNull(value: String?) = value?.let { attempt { LocalDateTime.parse(it) } }
-    private fun timeOrNull(value: String?) = value?.let { attempt { LocalTime.parse(it) } }
+    private fun validDateTime(value: String) = LocalDateTime.parse(value)
+    private fun validTime(value: String) = LocalTime.parse(value)
     // Pure row parsing only. The API 3 host can rename desugared time exceptions, so subclasses are not a stable boundary.
     private inline fun <T> attempt(block: () -> T): T? = try { block() }
         catch (_: Exception) { null }

@@ -15,26 +15,17 @@ import android.view.Gravity
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.TextView
-import io.nightfish.lightnovelreader.api.book.BookRepositoryApi
-import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
-import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
 import io.nightfish.lightnovelreader.api.userdata.UserDataRepositoryApi
-import io.nightfish.lightnovelreader.api.web.WebBookDataSourceManagerApi
 import java.lang.ref.WeakReference
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 
 /** Android page/dialog adapter. The Session owns workflow; the host adapter owns storage truth. */
-@Suppress("UNUSED_PARAMETER")
 internal class LinovelibMigrationController(
     context: Context,
     userData: UserDataRepositoryApi,
-    localBooks: LocalBookDataSourceApi,
-    bookshelves: BookshelfRepositoryApi,
-    books: BookRepositoryApi,
-    sourceManager: WebBookDataSourceManagerApi,
 ) {
-    private val application = context.applicationContext as? Application
+    private val application = context.applicationContext as Application
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor { task ->
         Thread(task, "LinovelibMigration").apply { isDaemon = true }
@@ -42,7 +33,6 @@ internal class LinovelibMigrationController(
     // Capture the original startup evidence now, never at start/retry or page recreation.
     private val gate = Api3StartupGate(context.applicationContext)
     private var resumedActivity = WeakReference<Activity>(null)
-    private var registered = false
 
     private data class ProgressBinding(val activity: WeakReference<Activity>, val dialogToken: Any, val attemptId: Long)
     private val binding = AtomicReference<ProgressBinding?>(null)
@@ -105,10 +95,8 @@ internal class LinovelibMigrationController(
     }
 
     fun onLoad() {
-        if (application == null) { session.onUnload(); return }
         if (session.onLoad()) {
             application.registerActivityLifecycleCallbacks(callbacks)
-            registered = true
         }
     }
 
@@ -145,8 +133,7 @@ internal class LinovelibMigrationController(
         if (state == MigrationState.Closed) {
             binding.set(null)
             dismissDialog()
-            if (registered) application?.unregisterActivityLifecycleCallbacks(callbacks)
-            registered = false
+            application.unregisterActivityLifecycleCallbacks(callbacks)
             return
         }
         if (state == MigrationState.AwaitingEntry) return
@@ -232,7 +219,6 @@ internal class LinovelibMigrationController(
                 binding.set(ProgressBinding(WeakReference(target), token, state.attemptId))
             }
         } catch (failure: Exception) {
-            revokeDialog(token)
             if (rendered === record) rendered = null
             runCatching { dialog.dismiss() }
             Log.e(TAG, "Migration dialog could not be displayed", failure)
@@ -274,6 +260,6 @@ internal class LinovelibMigrationController(
 
     companion object {
         private const val TAG = "LinovelibMigration"
-        private const val MAIN_ACTIVITY = "indi.dmzz_yyhyy.lightnovelreader.MainActivity"
+        private const val MAIN_ACTIVITY = "$API3_HOST_PACKAGE.MainActivity"
     }
 }

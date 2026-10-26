@@ -1,6 +1,7 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.migration
 
 import kotlinx.serialization.json.*
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
@@ -21,13 +22,19 @@ class MigrationSnapshotCodecTest {
         // Host temporal serializers normalize redundant :00 seconds when encoding JSON.
         assertEquals(expected, canonicalDates(input.snapshot.data))
         assertEquals(MigrationData.TW_SOURCE_ID, input.snapshot.sourceId)
-        assertEquals(64, input.digest.length)
     }
 
     @Test fun bareCborUsesSameOfficialSchema() {
         val raw = codec.read(fixture("tw-snapshot.cbor"), MigrationData.TW_SOURCE_ID)
         val zip = codec.read(fixture("tw-snapshot.zip"), MigrationData.TW_SOURCE_ID)
         assertEquals(zip.snapshot, raw.snapshot)
+    }
+
+    @Test fun definiteAndIndefiniteCollectionsPreserveTheSameSnapshot() {
+        val data = Json.parseToJsonElement(fixture("tw-snapshot.json").readText()).jsonObject
+        for (indefinite in listOf(false, true)) {
+            assertEquals(data, MigrationSnapshotCodec.decode(cborBytes(data, indefinite)))
+        }
     }
 
     @Test fun wrongFileIdentityIsRejectedWithoutTouchingInput() {
@@ -43,17 +50,72 @@ class MigrationSnapshotCodecTest {
         assertThrows(IllegalArgumentException::class.java) { MigrationSnapshotCodec.decode(bytes + 0) }
     }
 
-    @Test fun duplicateCborFieldsAreRejected() {
-        // map(2) { "x": 1, "x": 2 } must not silently take the last value.
-        assertThrows(IllegalArgumentException::class.java) {
-            MigrationSnapshotCodec.decode(byteArrayOf(0xa2.toByte(), 0x61, 0x78, 0x01, 0x61, 0x78, 0x02))
+    @Test fun declaredCborStringLengthsBeyondAvailablePayloadOrIntegerRangeAreRejected() {
+        listOf(MigrationSnapshotCodec.MAX_BYTES.toLong() + 1, Int.MAX_VALUE.toLong() + 1, Long.MAX_VALUE).forEach { length ->
+            // map(1), followed by a string key with an eight-byte length and no payload.
+            val bytes = byteArrayOf(0xa1.toByte(), 0x7b) + ByteBuffer.allocate(8).putLong(length).array()
+            assertThrows(IllegalArgumentException::class.java) { MigrationSnapshotCodec.decode(bytes) }
         }
     }
 
-    @Test fun excessiveNestingIsRejected() {
-        assertThrows(IllegalArgumentException::class.java) {
-            MigrationSnapshotCodec.decode(ByteArray(66) { 0x81.toByte() } + 0xf6.toByte())
+    @Test fun oversizedDeclaredCollectionsAreRejectedBeforeReadingTheirPayload() {
+        for (major in listOf(4, 5)) {
+            for (length in listOf(2_000_001L, Int.MAX_VALUE.toLong() + 1, Long.MAX_VALUE)) {
+                val declaration = byteArrayOf(((major shl 5) or 27).toByte()) +
+                    ByteBuffer.allocate(8).putLong(length).array()
+                val error = assertThrows(IllegalArgumentException::class.java) {
+                    MigrationSnapshotCodec.decode(snapshotWithExtraField(declaration))
+                }
+                // With the length check removed this reaches a truncated/invalid payload,
+                // not this requirement. Merely asserting any exception would hide that.
+                assertEquals("Failed requirement.", error.message)
+            }
         }
+    }
+
+    @Test fun unsignedOverflowCollectionLengthsCannotBecomeEmptyCollections() {
+        for (major in listOf(4, 5)) {
+            for (length in listOf(Long.MIN_VALUE, -1L)) {
+                // These Long bit patterns are unsigned CBOR lengths above Long.MAX_VALUE.
+                // Without the unsigned check, MIN_VALUE truncates to zero and -1 would
+                // be mistaken for the indefinite-collection sentinel.
+                val declaration = byteArrayOf(((major shl 5) or 27).toByte()) +
+                    ByteBuffer.allocate(8).putLong(length).array() +
+                    if (length == -1L) byteArrayOf(0xff.toByte()) else byteArrayOf()
+                val error = assertThrows(IllegalArgumentException::class.java) {
+                    MigrationSnapshotCodec.decode(snapshotWithExtraField(declaration))
+                }
+                assertEquals("Failed requirement.", error.message)
+            }
+        }
+    }
+
+    @Test fun duplicateCborFieldsAreRejected() {
+        val base = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data
+        val encoded = cborBytes(base, indefiniteCollections = true)
+        // A complete valid snapshot plus the same ID again: accepting the second key
+        // would otherwise produce a valid snapshot, so no later schema check can mask it.
+        val duplicate = encoded.dropLast(1).toByteArray() +
+            cborBytes(JsonPrimitive("webBookDataSourceId")) +
+            cborBytes(base.getValue("webBookDataSourceId")) + 0xff.toByte()
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            MigrationSnapshotCodec.decode(duplicate)
+        }
+        assertEquals("源快照含重复字段", error.message)
+    }
+
+    @Test fun excessiveNestingIsRejected() {
+        val base = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data
+        // The extra field is legal and ignored after decoding; its leaf is at depth 64.
+        assertEquals(base, MigrationSnapshotCodec.decode(snapshotWithExtraField(
+            ByteArray(63) { 0x81.toByte() } + 0xf6.toByte()
+        )))
+        val error = assertThrows(IllegalArgumentException::class.java) {
+            MigrationSnapshotCodec.decode(snapshotWithExtraField(
+                ByteArray(64) { 0x81.toByte() } + 0xf6.toByte()
+            ))
+        }
+        assertEquals("源快照结构过深或过大", error.message)
     }
 
     @Test fun minusOneSnapshotRequiresPersistedTwProvenance() {
@@ -63,13 +125,13 @@ class MigrationSnapshotCodecTest {
         val valueOffset = index + "webBookDataSourceId".length
         val aliasBytes = raw.copyOfRange(0, valueOffset) + 0x20.toByte() + raw.copyOfRange(valueOffset + 5, raw.size)
         withTemp(aliasBytes) { file ->
-            assertEquals(codec.read(fixture("tw-snapshot.zip"), MigrationData.TW_SOURCE_ID).snapshot, codec.read(file, -1).snapshot)
+            assertEquals(codec.read(fixture("tw-snapshot.zip"), MigrationData.TW_SOURCE_ID).snapshot, requireNotNull(codec.readTwAlias(file)).snapshot)
         }
         val selected = MigrationData.TW_SOURCE_ID.toString().toByteArray()
         val selectedIndex = aliasBytes.indices.first { offset -> offset + selected.size <= aliasBytes.size && aliasBytes.copyOfRange(offset, offset + selected.size).contentEquals(selected) }
         "123456789".toByteArray().copyInto(aliasBytes, selectedIndex)
         withTemp(aliasBytes) { file ->
-            assertThrows(IllegalArgumentException::class.java) { codec.read(file, -1) }
+            assertNull(codec.readTwAlias(file))
         }
     }
 
@@ -77,19 +139,16 @@ class MigrationSnapshotCodecTest {
         withTemp(aliasBytes("-345580097")) { file ->
             val before = MigrationSnapshotCodec.digest(file)
             assertNull(codec.readTwAlias(file))
-            // A strict request to read it as TW must still reject the other source.
-            assertThrows(IllegalArgumentException::class.java) { codec.read(file, -1) }
             assertEquals(before, MigrationSnapshotCodec.digest(file))
         }
     }
 
-    @Test fun optionalAliasReadStillAcceptsTwAndResolvesItsSourceIdentity() {
+    @Test fun aliasReadAcceptsTwAndResolvesItsSourceIdentity() {
         withTemp(aliasBytes(MigrationData.TW_SOURCE_ID.toString())) { file ->
             val before = MigrationSnapshotCodec.digest(file)
             val input = requireNotNull(codec.readTwAlias(file))
             assertEquals(MigrationData.TW_SOURCE_ID, input.snapshot.sourceId)
             assertEquals(MigrationData.TW_SOURCE_ID, input.snapshot.data.getValue("webBookDataSourceId").jsonPrimitive.int)
-            assertEquals(codec.read(file, -1), input)
             assertEquals(before, MigrationSnapshotCodec.digest(file))
         }
     }
@@ -128,7 +187,7 @@ class MigrationSnapshotCodecTest {
     @Test fun unreadableStandardFallsBackOnlyToExplicitTwAlias() {
         withTemp(byteArrayOf(0xbf.toByte())) { standard ->
             withTemp(aliasBytes(MigrationData.TW_SOURCE_ID.toString())) { alias ->
-                assertEquals(codec.read(alias, -1), codec.readTwSource(standard, alias))
+                assertEquals(codec.readTwAlias(alias), codec.readTwSource(standard, alias))
             }
             listOf(aliasBytes("-345580097"), aliasBytes(null), byteArrayOf(0xbf.toByte())).forEach { bytes ->
                 withTemp(bytes) { alias -> assertNull(codec.readTwSource(standard, alias)) }
@@ -182,20 +241,22 @@ class MigrationSnapshotCodecTest {
         val normalized = MigrationNormalizer.tw(MigrationSnapshot(MigrationData.TW_SOURCE_ID, decoded)).data
         assertEquals(records.size, normalized.getValue("bookRecordEntities").jsonArray.size)
         normalized.getValue("bookRecordEntities").jsonArray.forEach { row ->
-            assertEquals(JsonPrimitive(false), row.jsonObject["isFinished"])
-            assertEquals(JsonPrimitive(false), row.jsonObject["isFavorited"])
+            assertFalse(row.jsonObject.containsKey("isFinished"))
+            assertFalse(row.jsonObject.containsKey("isFavorited"))
         }
-        assertEquals(JsonPrimitive(false), normalized.getValue("bookshelfEntities").jsonArray.single().jsonObject["sortReversed"])
+        val merged = MigrationPlanner.plan(MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID),
+            MigrationSnapshot(MigrationData.TW_SOURCE_ID, decoded)).snapshot.data
+        assertEquals(JsonPrimitive(false), merged.getValue("bookshelfEntities").jsonArray.single().jsonObject["sortReversed"])
     }
 
-    @Test fun malformedTwRowsAndUnknownTopLevelFieldsDoNotHideOtherRecoverableData() {
+    @Test fun twDecodeFiltersNonObjectRowsAndIgnoresUnknownTopLevelFields() {
         val data = JsonObject(MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data + mapOf(
             "userReadingDataEntities" to JsonArray(listOf(JsonNull, buildJsonObject { put("id", "1") })),
             "unknownTable" to JsonArray(emptyList()),
         ))
         val decoded = MigrationSnapshotCodec.decode(cborBytes(data))
         assertEquals(MigrationData.TABLES.toSet() + "webBookDataSourceId", decoded.keys)
-        assertEquals(1, decoded.getValue("userReadingDataEntities").jsonArray.size)
+        assertEquals(JsonArray(listOf(buildJsonObject { put("id", "1") })), decoded.getValue("userReadingDataEntities"))
         assertEquals(0, decoded.getValue("chapterContentEntities").jsonArray.size)
     }
 
@@ -232,7 +293,13 @@ class MigrationSnapshotCodecTest {
         return cborBytes(data)
     }
 
-    private fun cborBytes(data: JsonElement): ByteArray {
+    private fun snapshotWithExtraField(value: ByteArray): ByteArray {
+        val base = cborBytes(MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).data,
+            indefiniteCollections = true)
+        return base.dropLast(1).toByteArray() + cborBytes(JsonPrimitive("extra")) + value + 0xff.toByte()
+    }
+
+    private fun cborBytes(data: JsonElement, indefiniteCollections: Boolean = false): ByteArray {
         val output = ByteArrayOutputStream()
         fun head(major: Int, value: Long) {
             when {
@@ -251,10 +318,15 @@ class MigrationSnapshotCodecTest {
         fun encode(element: JsonElement) {
             when (element) {
                 is JsonObject -> {
-                    head(5, element.size.toLong())
+                    if (indefiniteCollections) output.write(0xbf) else head(5, element.size.toLong())
                     element.forEach { (key, value) -> encode(JsonPrimitive(key)); encode(value) }
+                    if (indefiniteCollections) output.write(0xff)
                 }
-                is JsonArray -> { head(4, element.size.toLong()); element.forEach(::encode) }
+                is JsonArray -> {
+                    if (indefiniteCollections) output.write(0x9f) else head(4, element.size.toLong())
+                    element.forEach(::encode)
+                    if (indefiniteCollections) output.write(0xff)
+                }
                 is JsonPrimitive -> if (element == JsonNull) output.write(0xf6) else if (element.isString) {
                     val bytes = element.content.toByteArray(Charsets.UTF_8)
                     head(3, bytes.size.toLong()); output.write(bytes)

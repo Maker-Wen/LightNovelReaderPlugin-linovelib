@@ -1,0 +1,46 @@
+真实加载失败段落提取样本
+
+以下段落逐字提取自原始 HTTP 200 响应 #acontent 中含繁体失败提示的最后一个 p。
+仅添加 <div id="acontent"> 容器以隔离该段；原响应 p 本身没有闭合标签，样本保持相同结构。
+正文、标点和失败提示均不改写，也没有拼接简体失败提示或“手機版頁面”。
+这不是完整章节回归；完整响应和先前模拟器缓存均用于独立核对 marker 前文本确为原文。
+抓取使用插件内容 UA。最初失败响应未带 night Cookie 和 Cache-Control，不能称为本轮模拟器命中。
+另用插件显式请求头（night=0、no-cache、完整 Accept-Language）取得同页完整响应，供正文前缀交叉对照；传输实现仍为 Python urllib。
+完整原始响应保留于本次审计证据 c01-c10-live/；以下原始 SHA 对应完整响应。
+
+chapter-342689_3-load-failure.html
+URL: https://www.bilinovel.net/novel/5473/342689_3.html
+Fetched UTC: 2026-10-20T09:29:08.610348+00:00
+Original response SHA-256: 56a5ebdb94d8dd5e346b8d6d6afe8ce998957d80f31c5b8a19804743d56f4bc2
+Extraction: #acontent last p containing 內容加載失敗, raw source line 38
+Fixture SHA-256: aaa0caf0b611f25455eeef87bed7750fd39ec7168f4a835b7f75d75321dd70b8
+Same URL complete response fetched UTC: 2026-10-20T09:30:20.139587+00:00
+Complete response SHA-256: 993f7a911e5c4925ffb16079c03f6232ae8fb337242a0917ae8534539f4a0e18
+Complete response matching prefix line: 48
+
+chapter-342690_3-load-failure.html
+URL: https://www.bilinovel.net/novel/5473/342690_3.html
+Fetched UTC: 2026-10-20T09:29:12.543407+00:00
+Original response SHA-256: d5ac4df6b3b8ae16d74a7eac1fb40404efa87eed823957f2fda3754657090597
+Extraction: #acontent last p containing 內容加載失敗, raw source line 37
+Fixture SHA-256: a87713d6cae646ba82f07a195ccf6bda9b4c8b9acf9ec0ec3cd4f0f9f47f5b32
+Same URL complete response fetched UTC: 2026-10-20T09:30:21.191754+00:00
+Complete response SHA-256: 62c180b09993e6489435c520f078e5c8367bc43232fcf50acb3f05e3171b206e
+Complete response matching prefix line: 47
+
+chapter-342690_6-load-failure.html
+URL: https://www.bilinovel.net/novel/5473/342690_6.html
+Fetched UTC: 2026-10-20T09:29:19.814429+00:00
+Original response SHA-256: 914463a70756b4ce9bdd81ab10820299b63763333f75f3988024c680cddc8379
+Extraction: #acontent last p containing 內容加載失敗, raw source line 41
+Fixture SHA-256: 1a7a93e6e29d32d26798acff090f0c36b25365f8021be8e89503d56a662df482
+Same URL complete response fetched UTC: 2026-10-20T09:30:24.648693+00:00
+Complete response SHA-256: 1cc4ed1bd5f3428ca6ae4f4cecd71b4becdcfe7ba8777e76d7601a0976c7f1ed
+Complete response matching prefix line: 51
+
+chapter-342690-load-failure.html
+URL: https://www.bilinovel.net/novel/5473/342690.html
+Fetched UTC: 2026-10-20T09:28:29.231527+00:00
+Original response SHA-256: 425169f2daaf66f3f0a792a384d6d555888e1a7370a343c440fbc8214a3f8692
+Extraction: #acontent last p containing 內容加載失敗, raw source line 36
+Fixture SHA-256: 20ddc955980cfac6c232cc020232221f54d4b480191511a3d0484dfea05bc6c1

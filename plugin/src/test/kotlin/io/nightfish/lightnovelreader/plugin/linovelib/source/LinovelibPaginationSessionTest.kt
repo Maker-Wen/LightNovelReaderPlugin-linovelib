@@ -39,7 +39,8 @@ class LinovelibPaginationSessionTest {
                     listPage(id, lastPage = 3)
                 },
                 parser = LinovelibHtmlParser(),
-                searchBookIds = { flowOf(SearchResult.End()) }
+                searchBookIds = { flowOf(SearchResult.End()) },
+                metadata = LinovelibMetadataStore()
             )
             val first = provider.exploreExpandedPageDataSourceMap.getValue(LinovelibExplorePageProvider.WENKU_PAGE_ID)
             val firstRegion = first.filters.first() as SingleChoiceFilter
@@ -91,7 +92,8 @@ class LinovelibPaginationSessionTest {
                     requested += url
                     listPage(if (url.endsWith("_2_0.html")) "200" else "100")
                 },
-                parser = LinovelibHtmlParser(), filters = filters.filters, filteredUrl = { filters.url() }
+                parser = LinovelibHtmlParser(), filters = filters.filters, filteredUrl = { filters.url() },
+                metadata = LinovelibMetadataStore()
             )
             val flow = page.getResultFlow()
             val results = Channel<SearchResult>(Channel.UNLIMITED)
@@ -153,7 +155,8 @@ class LinovelibPaginationSessionTest {
                     } else {
                         "$HOST/top/monthvisit/1.html"
                     }
-                }
+                },
+                metadata = LinovelibMetadataStore()
             )
             val oldCollection = launch(Dispatchers.Default) { page.getResultFlow().collect { oldResults += it } }
             var newCollection: Job? = null
@@ -201,7 +204,8 @@ class LinovelibPaginationSessionTest {
                     } else {
                         listPage(if (url.endsWith("/2.html")) "200" else "100")
                     }
-                }
+                },
+                metadata = LinovelibMetadataStore()
             )
             val old = launch { page.getResultFlow().collect { oldResults += it } }
             var current: Job? = null
@@ -244,7 +248,8 @@ class LinovelibPaginationSessionTest {
                     htmlLoader = {
                         if (firstAttempt) throw CancellationException("Request cancelled")
                         listPage("100", lastPage = 1)
-                    }
+                    },
+                    metadata = LinovelibMetadataStore()
                 )
                 val cancelledResults = mutableListOf<SearchResult>()
                 val cancelled = launch { page.getResultFlow().collect { cancelledResults += it } }

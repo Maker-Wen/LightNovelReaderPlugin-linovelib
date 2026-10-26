@@ -11,21 +11,11 @@ class LinovelibSearchResponseTest {
     private val parser = LinovelibHtmlParser()
 
     @Test
-    fun `finds direct book id from redirected response url`() {
-        val response = LinovelibSearchResponse(
-            finalUrl = "https://www.bilinovel.com/novel/3768.html",
-            html = "<html><body></body></html>"
-        )
-
-        assertEquals("3768", response.directBookId(parser))
-    }
-
-    @Test
     fun `search page metadata does not replace the returned search results`() = runBlocking {
-        val provider = LinovelibSearchProvider(
+        val provider = testSearchProvider(
             htmlLoader = { error("ID search must not fetch details") },
             searchHtmlLoader = {
-                LinovelibSearchResponse(
+                LinovelibHtmlResponse(
                     finalUrl = "https://www.bilinovel.com/search.html?searchkey=example",
                     html = """
                         <html><head>
@@ -50,10 +40,10 @@ class LinovelibSearchResponseTest {
     @Test
     fun `redirected search emits direct book and end without a second request`() = runBlocking {
         val detailRequests = mutableListOf<String>()
-        val provider = LinovelibSearchProvider(
+        val provider = testSearchProvider(
             htmlLoader = { url -> detailRequests += url; "" },
             searchHtmlLoader = {
-                LinovelibSearchResponse(
+                LinovelibHtmlResponse(
                     finalUrl = "https://www.bilinovel.com/novel/3768.html",
                     html = "<html><body></body></html>"
                 )
@@ -72,8 +62,30 @@ class LinovelibSearchResponseTest {
     }
 
     @Test
+    fun `provider normalizes Unicode whitespace in user queries`() = runBlocking {
+        val requested = mutableListOf<String>()
+        val provider = testSearchProvider(
+            htmlLoader = { error("ID-only search must not fetch details") },
+            searchHtmlLoader = { query ->
+                requested += query
+                LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/3768.html", "")
+            }
+        )
+
+        val direct = provider.searchBookIds("\u3000 3247 \u2003").toList()
+        assertEquals("3247", (direct.first() as SearchResult.SingleBook).bookId)
+        val empty = provider.searchBookIds(" \u3000\u2003 ").toList()
+        assertTrue(empty.first() is SearchResult.Empty)
+        assertTrue(requested.isEmpty())
+
+        val redirected = provider.searchBookIds("\u3000 SAO \u2003").toList()
+        assertEquals(listOf("SAO"), requested)
+        assertEquals("3768", (redirected.first() as SearchResult.SingleBook).bookId)
+    }
+
+    @Test
     fun `failed search requests emit error and end`() = runBlocking {
-        val provider = LinovelibSearchProvider(
+        val provider = testSearchProvider(
             htmlLoader = { "" },
             searchHtmlLoader = { error("Search request failed") },
             parser = parser,

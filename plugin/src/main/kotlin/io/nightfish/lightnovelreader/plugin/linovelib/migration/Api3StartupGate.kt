@@ -36,7 +36,7 @@ internal class Api3StartupGate(private val context: Context) {
         if (!startupWasCold || !initialWorkCheck) {
             throw MigrationAdmissionException(MigrationReason.StartupConflict, false)
         }
-        if (activity.javaClass.name != MAIN_ACTIVITY || activity.isFinishing || activity.isDestroyed) {
+        if (activity.isFinishing || activity.isDestroyed) {
             throw MigrationAdmissionException(MigrationReason.NotReady, true)
         }
         val ready = try {
@@ -72,11 +72,13 @@ internal class Api3StartupGate(private val context: Context) {
         check(file.isFile) { "后台任务数据库尚未初始化" }
         SQLiteDatabase.openDatabase(file.path, null,
             SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
-            check(database.isReadOnly)
             return database.rawQuery(
                 "SELECT count(*) FROM WorkSpec WHERE state IN (0, 1, 4) " +
                     "AND NOT ($IDLE_PERIODIC_PREDICATE)", arrayOf(CHECK_UPDATE_WORKER, CHECK_UPDATE_NAME)
-            ).use { cursor -> cursor.moveToFirst() && cursor.getLong(0) == 0L }
+            ).use { cursor ->
+                cursor.moveToFirst()
+                cursor.getLong(0) == 0L
+            }
         }
     }
 
@@ -85,7 +87,6 @@ internal class Api3StartupGate(private val context: Context) {
         check(file.isFile) { "后台任务数据库尚未初始化" }
         SQLiteDatabase.openDatabase(file.path, null,
             SQLiteDatabase.OPEN_READONLY or SQLiteDatabase.NO_LOCALIZED_COLLATORS).use { database ->
-            check(database.isReadOnly)
             return database.rawQuery(
                 "SELECT id FROM WorkSpec WHERE $IDLE_PERIODIC_PREDICATE",
                 arrayOf(CHECK_UPDATE_WORKER, CHECK_UPDATE_NAME)
@@ -139,8 +140,7 @@ internal class Api3StartupGate(private val context: Context) {
 
     companion object {
         private const val TAG = "LinovelibMigration"
-        private const val MAIN_ACTIVITY = "indi.dmzz_yyhyy.lightnovelreader.MainActivity"
-        private const val CHECK_UPDATE_WORKER = "indi.dmzz_yyhyy.lightnovelreader.data.work.CheckUpdateWork"
+        private const val CHECK_UPDATE_WORKER = "$API3_HOST_PACKAGE.data.work.CheckUpdateWork"
         private const val CHECK_UPDATE_NAME = "checkUpdate"
         // In the current official API 3 APKs, CheckUpdateWork waits before requesting or writing
         // book data. Their release DEX folds isAppStopped to false: the wait is an unconditional

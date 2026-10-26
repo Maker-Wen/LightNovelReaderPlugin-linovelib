@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
@@ -74,9 +75,9 @@ class LinovelibBookDetailsHostTest {
         var html = detail("Redirected")
         val metadata = LinovelibMetadataStore()
         var requests = 0
-        val provider = LinovelibSearchProvider(
+        val provider = testSearchProvider(
             { requests++; error("Redirect must not request details") },
-            { LinovelibSearchResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
+            { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
             LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata
         )
         assertTrue(provider.search(provider.searchTypes.single(), "query").toList().first() is SearchResult.MultipleBook)
@@ -84,6 +85,25 @@ class LinovelibBookDetailsHostTest {
         assertTrue(provider.search(provider.searchTypes.single(), "query").toList().first() is SearchResult.SingleBook)
         assertEquals("Redirected", metadata.bookInformation("1")?.title)
         assertEquals(0, requests)
+    }
+
+    @Test
+    fun repeatedLoadKeepsTheActiveOfflineProbeJob() {
+        val source = source(LinovelibMetadataStore(), mutableListOf()) { error("No detail request expected") }
+        val probe = Job()
+        val field = LinovelibWebDataSource::class.java.getDeclaredField("offlineProbeJob").apply {
+            isAccessible = true
+            set(source, probe)
+        }
+        try {
+            source.onLoad()
+            source.onLoad()
+            assertSame(probe, field.get(source))
+            assertTrue(probe.isActive)
+        } finally {
+            (field.get(source) as Job).cancel()
+            probe.cancel()
+        }
     }
 
     @Test

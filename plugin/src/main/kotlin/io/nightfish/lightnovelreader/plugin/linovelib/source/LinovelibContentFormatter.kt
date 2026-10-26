@@ -15,9 +15,7 @@ internal object LinovelibContentFormatter {
 
         blocks.forEach { block ->
             when (block) {
-                is ParsedContentBlock.Text -> block.text.trim()
-                    .takeIf(String::isNotEmpty)
-                    ?.let(paragraphs::add)
+                is ParsedContentBlock.Text -> paragraphs.add(block.text)
                 is ParsedContentBlock.Image -> {
                     flushParagraphs()
                     result += block

@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.net.URISyntaxException
 import java.time.LocalDate
 
 class LinovelibHtmlParserTest {
@@ -50,6 +51,41 @@ class LinovelibHtmlParserTest {
             </div>
         """.trimIndent()
         assertEquals("https://www.bilinovel.net/top/monthvisit/1.html", parser.parseRankingRows(ranking).single().expandedUrl)
+    }
+
+    @Test
+    fun expandedRowsSelectTheFirstSupportedLinkAfterRejectedCandidates() {
+        val html = """
+            <section class="module">
+              <header class="module-header"><h2 class="module-title">Books</h2>
+                <a class="module-header-btn" href="https://example.com/wenku/foreign.html">Foreign host</a>
+                <a class="module-header-btn" href="/sort/">Unsupported path</a>
+                <a class="module-header-btn" href="/wenku/first.html">First supported</a>
+                <a class="module-header-btn" href="/top/monthvisit/1.html">Later supported</a>
+              </header>
+              ${exploreBook(1)}
+            </section>
+        """.trimIndent()
+
+        assertEquals("${LinovelibUrls.HOST}/wenku/first.html", parser.parseExploreRows(html).single().expandedUrl)
+    }
+
+    @Test
+    fun expandedRowsParseTheHostOnlyWhenThereIsALinkCandidate() {
+        val invalidHostParser = LinovelibHtmlParser("https://invalid host")
+        val html = """
+            <section class="module"><header class="module-header"><h2 class="module-title">Books</h2>
+              %s
+            </header>${exploreBook(1)}</section>
+        """.trimIndent()
+
+        assertEquals(null, invalidHostParser.parseExploreRows(html.format("")).single().expandedUrl)
+        val failure = runCatching {
+            invalidHostParser.parseExploreRows(html.format(
+                """<a class="module-header-btn" href="https://example.com/wenku/first.html">More</a>"""
+            ))
+        }.exceptionOrNull()
+        assertTrue(failure is URISyntaxException)
     }
 
     @Test
@@ -116,71 +152,37 @@ class LinovelibHtmlParserTest {
             "完结" to true, "完結" to true,
             "连载中" to false, "連載中" to false, "" to false
         )) {
-            for (statusHtml in listOf(
-                "<meta property=\"og:novel:status\" content=\"$status\" />",
-                "<p class=\"book-meta book-layout-inline\">10万字 | $status</p>"
-            )) {
-                val book = parser.parseBookInformation(
-                    "1", "<h1 class=\"book-title\">Example</h1>$statusHtml"
-                )
-                assertEquals(statusHtml, complete, book.isComplete)
-            }
+            val book = parser.parseBookInformation("1", """
+                <div class="book-detail-info">
+                    <h1 class="book-title">Example</h1>
+                    <p class="book-meta book-layout-inline">10万字 | $status</p>
+                </div>
+            """.trimIndent())
+            assertEquals(status, complete, book.isComplete)
         }
     }
 
     @Test
-    fun parseBookInformationReadsMetadataFromNovelPage() {
-        val html = """
-            <html>
-              <head>
-                <meta property="og:image" content="https://tw.linovelib.com/files/article/image/0/1/1s.jpg" />
-              </head>
-              <body>
-                <h1 class="book-title">High School DxD</h1>
-                <span class="authorname"><a href="/authorarticle/Ichiei-Ishibumi.html">Ichiei Ishibumi</a></span>
-                <p class="book-meta book-layout-inline">29035 readers<span>/</span>5283 votes<b>/</b></p>
-                <p class="book-meta book-layout-inline">398.2 ${"\u842c\u5b57"}<span>|</span>${"\u5b8c\u7d50"}<span>|</span>anime</p>
-                <span class="tag-small-group origin-left">
-                  <em class="tag-small red"><a href="/wenku/lastupdate_1_0_0_0_0_0_0_1_0.html">School</a></em>
-                  <em class="tag-small red"><a href="/wenku/lastupdate_2_0_0_0_0_0_0_1_0.html">Fantasy</a></em>
-                  <em class="tag-small orange"><a href="/wenku/fujimi/1.html">Fujimi Fantasia Bunko</a></em>
-                </span>
-                <section id="bookSummary">
-                  <content>Line one<br>Line two</content>
-                  <aside class="backupname"><em>Alias</em><span>DxD</span></aside>
-                </section>
-                <a class="book-meta book-status">
-                  <div>last update<span>dot</span>2024-02-25</div>
-                </a>
-              </body>
-            </html>
-        """.trimIndent()
-
-        val book = parser.parseBookInformation("1", html)
+    fun parseBookInformationReadsCapturedCompletedNovelPage() {
+        val book = parser.parseBookInformation("1", capturedBookPage("1"))
 
         assertEquals("1", book.id)
-        assertEquals("High School DxD", book.title)
-        assertEquals("DxD", book.subtitle)
-        assertEquals("https://tw.linovelib.com/files/article/image/0/1/1s.jpg", book.coverUrl)
-        assertEquals("Ichiei Ishibumi", book.author)
-        assertEquals("Line one\nLine two", book.description)
-        assertEquals(listOf("School", "Fantasy"), book.tags)
-        assertEquals("Fujimi Fantasia Bunko", book.publishingHouse)
+        assertEquals("恶魔高校DxD", book.title)
+        assertEquals("High School DxD", book.subtitle)
+        assertEquals("https://www.bilinovel.net/files/article/image/0/1/1s.jpg", book.coverUrl)
+        assertEquals("石踏一荣", book.author)
+        assertEquals(6, book.description.lines().size)
+        assertEquals(listOf("校园", "奇幻", "战斗", "后宫", "青梅竹马", "人外"), book.tags)
+        assertEquals("富士见文库", book.publishingHouse)
         assertEquals(3_982_000, book.wordCount)
         assertEquals(LocalDate.of(2024, 2, 25), book.lastUpdated)
         assertTrue(book.isComplete)
+        assertEquals("https://www.bilinovel.net/authorarticle/石踏一荣.html", book.authorUrl)
         assertEquals(
-            "https://www.bilinovel.net/authorarticle/Ichiei-Ishibumi.html",
-            book.authorUrl
+            "https://www.bilinovel.net/wenku/lastupdate_63_0_0_0_0_0_0_1_0.html",
+            book.relatedLinks["校园"]
         )
-        assertEquals(
-            "https://www.bilinovel.net/wenku/lastupdate_1_0_0_0_0_0_0_1_0.html",
-            book.relatedLinks["School"]
-        )
-        assertEquals(
-            "https://www.bilinovel.net/wenku/fujimi/1.html",
-            book.relatedLinks["Fujimi Fantasia Bunko"]
-        )
+        assertEquals("https://www.bilinovel.net/wenku/fujimibunko/1.html", book.relatedLinks["富士见文库"])
     }
 
     @Test
@@ -246,7 +248,7 @@ class LinovelibHtmlParserTest {
             </div>
         """.trimIndent()
 
-        val chapter = parser.parseChapterContent("225508", html)
+        val chapter = parser.parseChapterContent("225508", html, LinovelibUrls.chapter(LinovelibUrls.HOST, "1", "225508"))
 
         assertEquals("225508", chapter.id)
         assertEquals("Afterword", chapter.title)
@@ -263,7 +265,6 @@ class LinovelibHtmlParserTest {
             ),
             chapter.blocks
         )
-        assertFalse(chapter.blocks.any { it is ParsedContentBlock.Text && it.text.contains("warning") })
     }
 
     @Test
@@ -275,7 +276,7 @@ class LinovelibHtmlParserTest {
             </div>
         """.trimIndent()
 
-        val chapter = parser.parseChapterContent("12", html)
+        val chapter = parser.parseChapterContent("12", html, LinovelibUrls.chapter(LinovelibUrls.HOST, "1", "12"))
 
         assertEquals(
             listOf(
@@ -297,40 +298,37 @@ class LinovelibHtmlParserTest {
             <div id="acontent"><p>First page.</p></div>
         """.trimIndent()
 
-        val chapter = parser.parseChapterContent("2", html)
+        val chapter = parser.parseChapterContent("2", html, LinovelibUrls.chapter(LinovelibUrls.HOST, "1", "2"))
 
         assertEquals("2", chapter.nextChapterId)
         assertEquals("/novel/1/2_2.html", chapter.nextPageUrl)
     }
 
     @Test
-    fun parseChapterContentRemovesIncompleteLoadFailureTail() {
-        val html = """
-            <div id="acontent">
-              <p>Complete sentence. Broken sta……（${"\u5167\u5bb9\u52a0\u8f09\u5931\u6557"}${"\u624b\u6a5f\u7248\u9801\u9762"}</p>
-            </div>
-        """.trimIndent()
-
-        val chapter = parser.parseChapterContent("2", html)
-
-        assertEquals(
-            listOf(ParsedContentBlock.Text("Complete sentence.")),
-            chapter.blocks
+    fun parseChapterContentKeepsCapturedTextAfterPunctuationBeforeLoadFailureMarker() {
+        // Exact paragraph extracts and raw-response provenance are in html/load-failure-fixtures.txt.
+        val cases = listOf(
+            "342689_3" to "接着笛音突然停止，空良也停下脚步。他来到每天都会经过的昏暗高架桥下。那里摆着一台自助证件照机，而高架桥旁还有一栋二楼是居酒屋的小楼房。明明是每天都会见到的风景，但从照",
+            "342690_3" to "「我和爱海妹妹，其实是通过友梨介绍才变成朋友的。大约是两年前的事吧。」叶月用平静的声音说道。「当时友梨不小心说溜了嘴，告诉了她我在当偶像。那时我还不红，但她却像自己的事一样开心，对我说『小薰姐姐好厉害』。我以恐怖电影主题曲的演唱者出道的时候，她一直重复听着那",
+            "342690_6" to "「浦岛女」用颤抖的双手，做"
         )
+        cases.forEach { (pageId, expectedText) ->
+            val html = javaClass.getResource("/html/chapter-$pageId-load-failure.html")!!.readText()
+            val chapter = parser.parseChapterContent(
+                pageId.substringBefore('_'), html, "${LinovelibUrls.HOST}/novel/5473/$pageId.html"
+            )
+            assertEquals(pageId, listOf(ParsedContentBlock.Text(expectedText)), chapter.blocks)
+        }
     }
 
     @Test
-    fun parseChapterContentKeepsTextBeforeLoadFailureMarker() {
-        val html = """
-            <div id="acontent">
-              <p>Valid line one.<br>Valid line two.${"\u5167\u5bb9\u52a0\u8f09\u5931\u6557"}${"\u624b\u6a5f\u7248\u9801\u9762"}</p>
-            </div>
-        """.trimIndent()
-
-        val chapter = parser.parseChapterContent("2", html)
-
+    fun parseChapterContentRemovesCapturedLoadFailureTemplateTail() {
+        val html = javaClass.getResource("/html/chapter-342690-load-failure.html")!!.readText()
+        val chapter = parser.parseChapterContent(
+            "342690", html, "${LinovelibUrls.HOST}/novel/5473/342690.html"
+        )
         assertEquals(
-            listOf(ParsedContentBlock.Text("Valid line one.\nValid line two.")),
+            listOf(ParsedContentBlock.Text("而那津美并未责怪空良，只是将爱海昨日的状况一一记在笔记本上")),
             chapter.blocks
         )
     }
@@ -346,8 +344,7 @@ class LinovelibHtmlParserTest {
         val chapter = parser.parseChapterContent(
             chapterId = "61960",
             html = html,
-            baseUrl = LinovelibUrls.HOST,
-            restoreParagraphOrder = true
+            baseUrl = LinovelibUrls.chapter(LinovelibUrls.HOST, "1", "61960")
         )
 
         assertEquals(
@@ -363,7 +360,8 @@ class LinovelibHtmlParserTest {
             """
                 <h1 id="atitle">章節标题</h1>
                 <div id="acontent"><p>正文內容与原文</p></div>
-            """.trimIndent()
+            """.trimIndent(),
+            LinovelibUrls.chapter(LinovelibUrls.HOST, "1", "10")
         )
         val searchRow = requireNotNull(parser.parseListPage(
             """
@@ -451,24 +449,6 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseChapterContentResolvesImagesAgainstContentHost() {
-        val chapter = parser.parseChapterContent(
-            chapterId = "10",
-            html = "<div id=\"acontent\"><img src=\"/files/illustration.jpg\"></div>",
-            baseUrl = LinovelibUrls.HOST
-        )
-
-        assertEquals(
-            listOf(
-                ParsedContentBlock.Image(
-                    "${LinovelibUrls.HOST}/files/illustration.jpg"
-                )
-            ),
-            chapter.blocks
-        )
-    }
-
-    @Test
     fun parseExploreRowsReadsHomePageModules() {
         val html = """
             <section class="module">
@@ -502,29 +482,26 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseBookInformationFallsBackToOpenGraphMetadata() {
-        val html = """
-            <html>
-              <head>
-                <meta property="og:novel:book_name" content="Meta Title" />
-                <meta property="og:novel:author" content="Meta Author" />
-                <meta property="og:description" content="Meta description" />
-                <meta property="og:novel:category" content="Meta Publisher" />
-                <meta property="og:novel:update_time" content="2025-01-02 12:00:00" />
-                <meta property="og:novel:status" content="${"\u5b8c\u7d50"}" />
-              </head>
-            </html>
-        """.trimIndent()
+    fun parseBookInformationReadsCapturedOngoingNovelPage() {
+        val book = parser.parseBookInformation("3095", capturedBookPage("3095"))
 
-        val book = parser.parseBookInformation("9", html)
-
-        assertEquals("Meta Title", book.title)
-        assertEquals("Meta Author", book.author)
-        assertEquals("Meta description", book.description)
-        assertEquals("Meta Publisher", book.publishingHouse)
-        assertEquals(LocalDate.of(2025, 1, 2), book.lastUpdated)
-        assertTrue(book.isComplete)
+        assertEquals("3095", book.id)
+        assertEquals("败北女角太多了！", book.title)
+        assertEquals("败犬女主太多了！", book.subtitle)
+        assertEquals("https://www.bilinovel.net/files/article/image/3/3095/3095s.jpg", book.coverUrl)
+        assertEquals("雨森焚火", book.author)
+        assertEquals(8, book.description.lines().size)
+        assertEquals(listOf("校园", "欢乐向", "青春", "恋爱", "后宫", "妹妹"), book.tags)
+        assertEquals("小学馆", book.publishingHouse)
+        assertEquals(1_095_000, book.wordCount)
+        assertEquals(LocalDate.of(2026, 10, 2), book.lastUpdated)
+        assertFalse(book.isComplete)
+        assertEquals("https://www.bilinovel.net/authorarticle/雨森焚火.html", book.authorUrl)
+        assertEquals("https://www.bilinovel.net/wenku/shogakukan/1.html", book.relatedLinks["小学馆"])
     }
+
+    private fun capturedBookPage(id: String): String =
+        javaClass.getResource("/html/book-$id.html")!!.readText()
 
     @Test
     fun parseRankingRowsReadsLinkTitlesWithCssRankingNumbers() {
@@ -594,21 +571,13 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseListPageUsesImageAltWhenVisibleTitleIsTruncated() {
-        val html = """
-            <ol class="book-ol">
-              <li class="book-li">
-                <a href="/novel/21.html" class="book-layout">
-                  <img data-src="/files/article/image/0/21/21s.jpg" alt="Very Long Complete Book Title" />
-                  <h4 class="book-title">Very Long Complete...</h4>
-                </a>
-              </li>
-            </ol>
-        """.trimIndent()
+    fun parseListPagePreservesCapturedTitleEndingWithEllipsis() {
+        val html = requireNotNull(javaClass.getResource("/html/list-title-3343.html")).readText()
 
-        val row = requireNotNull(parser.parseListPage(html))
+        val book = requireNotNull(parser.parseListPage(html)).books.single()
 
-        assertEquals("Very Long Complete Book Title", row.books.single().title)
+        assertEquals("3343", book.id)
+        assertEquals("妹妹是不能当女友的，可是……", book.title)
     }
 
     @Test

@@ -44,8 +44,8 @@ internal class LinovelibWenkuFilters(private val host: String) {
 
     val filters: List<Filter<*>> = listOf(region, theme, order, animation, words, status)
 
-    fun url(page: Int = 1): String = LinovelibUrls.wenku(
-        host, order.code, page, theme.code, status.code, animation.code, region.code, words.code
+    fun url(): String = LinovelibUrls.wenku(
+        host, order.code, 1, theme.code, status.code, animation.code, region.code, words.code
     )
 }
 

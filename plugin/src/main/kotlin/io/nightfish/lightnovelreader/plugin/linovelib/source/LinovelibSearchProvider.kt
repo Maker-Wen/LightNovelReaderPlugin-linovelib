@@ -9,13 +9,11 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
 internal class LinovelibSearchProvider(
-    htmlLoader: suspend (String) -> String,
-    private val searchHtmlLoader: suspend (String) -> LinovelibSearchResponse,
+    private val searchHtmlLoader: suspend (String) -> LinovelibHtmlResponse,
     private val parser: LinovelibHtmlParser,
     private val diagnostics: LinovelibDiagnostics,
-    host: String = LinovelibUrls.HOST,
-    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore(),
-    private val details: LinovelibBookDetails = LinovelibBookDetails(htmlLoader, parser, diagnostics, host, metadata)
+    private val metadata: LinovelibMetadataStore,
+    private val details: LinovelibBookDetails
 ) : SearchProvider {
 
     override val searchTypes: List<SearchType> = listOf(
@@ -34,7 +32,7 @@ internal class LinovelibSearchProvider(
 
     private fun search(searchType: SearchType, keyword: String, loadDetails: Boolean): Flow<SearchResult> = flow {
         val query = keyword.trim()
-        val bookId = parser.bookIdFromKeyword(keyword)
+        val bookId = parser.bookIdFromKeyword(query)
         diagnostics.info(
             "SEARCH_START",
             linkedMapOf("type" to searchType.type, "keyword" to query, "directBookId" to bookId)
@@ -47,7 +45,6 @@ internal class LinovelibSearchProvider(
                     it.rethrowIfCancellation()
                     diagnostics.error("SEARCH_DIRECT_ERROR", it, mapOf("bookId" to bookId))
                 }.getOrNull()
-                    ?.takeUnless { it.isEmpty() }
                     ?.let { emit(SearchResult.MultipleBook(it)) }
                     ?: emit(SearchResult.SingleBook(bookId))
             } else {
@@ -77,7 +74,7 @@ internal class LinovelibSearchProvider(
             return@flow
         }
 
-        val redirectedBookId = searchResponse.directBookId(parser)
+        val redirectedBookId = parser.bookIdFromKeyword(searchResponse.finalUrl)
         if (redirectedBookId != null) {
             if (loadDetails) {
                 val book = runCatching {
@@ -86,7 +83,7 @@ internal class LinovelibSearchProvider(
                     it.rethrowIfCancellation()
                     diagnostics.error("SEARCH_REDIRECT_ERROR", it, mapOf("bookId" to redirectedBookId))
                 }.getOrNull()
-                if (book != null && !book.isEmpty()) {
+                if (book != null) {
                     emit(SearchResult.MultipleBook(book))
                 } else {
                     emit(SearchResult.SingleBook(redirectedBookId))

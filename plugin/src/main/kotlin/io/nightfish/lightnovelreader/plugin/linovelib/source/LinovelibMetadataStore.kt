@@ -8,20 +8,18 @@ internal class LinovelibMetadataStore {
 
     @Synchronized
     fun rememberBook(book: ParsedBookInformation) {
-        if (book.title.isBlank()) return
-        val snapshot = book.copy(tags = book.tags.toList(), relatedLinks = book.relatedLinks.toMap())
-        books.remember(book.id, snapshot)
+        books.remember(book.id, book)
         if (book.author.isNotBlank() && book.authorUrl.isNotBlank()) {
             relatedTargets.remember(LinovelibRelatedSearch.authorDisplayTag(book.author), book.authorUrl)
         }
-        snapshot.relatedLinks.forEach { (tag, target) ->
-            if (tag.isNotBlank() && target.isNotBlank()) relatedTargets.remember(tag.trim(), target)
+        book.relatedLinks.forEach { (tag, target) ->
+            relatedTargets.remember(tag, target)
         }
     }
 
     @Synchronized
     fun rememberBooks(books: List<ParsedExploreBook>) {
-        books.filter { it.title.isNotBlank() }.forEach { summaries.remember(it.id, it) }
+        books.forEach { summaries.remember(it.id, it) }
     }
 
     @Synchronized
@@ -32,7 +30,7 @@ internal class LinovelibMetadataStore {
         books[id] ?: summaries[id]?.toParsedBookInformation()
 
     @Synchronized
-    fun relatedTarget(displayTag: String): String? = relatedTargets[displayTag.trim()]
+    fun relatedTarget(displayTag: String): String? = relatedTargets[displayTag]
 
     // Refresh write order explicitly. Reads must not prolong retention.
     private fun <T> LinkedHashMap<String, T>.remember(key: String, value: T) {

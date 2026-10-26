@@ -82,14 +82,15 @@ class LinovelibListPageTest {
             """<ol class="book-ol"></ol>${book("1")}""" to SearchResult.SingleBook::class.java
         ).forEach { (html, expected) ->
             val metadata = LinovelibMetadataStore()
-            val search = LinovelibSearchProvider(
+            val search = testSearchProvider(
                 htmlLoader = { error("ID-only search must not fetch details") },
-                searchHtmlLoader = { LinovelibSearchResponse("${LinovelibUrls.HOST}/search.html", html) },
+                searchHtmlLoader = { LinovelibHtmlResponse("${LinovelibUrls.HOST}/search.html", html) },
                 parser = parser,
                 diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
                 metadata = metadata
             )
-            val expanded = LinovelibLinkedExpandedPageDataSource("Books", url, { html }, parser)
+            val expanded = LinovelibLinkedExpandedPageDataSource("Books", url, { html }, parser,
+                metadata = LinovelibMetadataStore())
             listOf(search.searchBookIds("query").toList(), expanded.getResultFlow().toList()).forEach { results ->
                 assertEquals(expected, results.first().javaClass)
                 assertEquals(2, results.size)

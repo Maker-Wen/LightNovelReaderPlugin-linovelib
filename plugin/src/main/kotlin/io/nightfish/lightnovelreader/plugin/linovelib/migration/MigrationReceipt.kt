@@ -16,7 +16,7 @@ private fun inspectMigrationReceipt(snapshot: MigrationSnapshot): MigrationRecei
     }
     require(rows.size <= 1)
     if (rows.isEmpty()) return MigrationReceiptStatus.Absent
-    val row = rows.single()
+    val row = rows.first()
     require(row["type"] == JsonPrimitive("String"))
     val value = Json.parseToJsonElement(row.getValue("value").jsonPrimitive.content).jsonObject
     require(value["kind"]?.jsonPrimitive?.content == "linovelib_tw_once" &&

@@ -15,15 +15,16 @@ import java.lang.reflect.Field
 import java.lang.reflect.Modifier
 import java.util.UUID
 
-internal enum class MigrationTransactionExit { NotStarted, RolledBack, Committed, Unknown }
-internal enum class MigrationCompletion { Present, Absent, Unknown }
+internal const val API3_HOST_PACKAGE = "indi.dmzz_yyhyy.lightnovelreader"
+
+internal enum class MigrationTransactionExit { NotStarted, RolledBack, Unknown }
+internal enum class MigrationCompletion { Present, Unknown }
 
 internal fun migrationResultAfterFailure(
     exit: MigrationTransactionExit,
     completion: MigrationCompletion,
     failure: MigrationAttemptResult.NotCommitted,
 ): MigrationAttemptResult = when {
-    exit == MigrationTransactionExit.Committed -> MigrationAttemptResult.Completed
     exit == MigrationTransactionExit.NotStarted || exit == MigrationTransactionExit.RolledBack -> failure
     completion == MigrationCompletion.Present -> MigrationAttemptResult.Completed
     else -> MigrationAttemptResult.RestartRequired
@@ -49,31 +50,27 @@ internal class Api3HostAdapter(
     private class InputChanged : IllegalStateException()
     private class SourceChanged : IllegalStateException()
     private val codec = MigrationSnapshotCodec()
-    private val planner = MigrationPlanner
     private lateinit var database: SQLiteDatabase
-    private lateinit var room: Any
     private lateinit var localDataManager: Any
     private lateinit var sourcePaths: Set<String>
     private val currentSqlRows = mutableMapOf<String, MutableMap<JsonObject, ContentValues>>()
 
     /** Enable writes only when the host exposes the verified shared API 3 storage contract. */
     private fun initialize(): Boolean {
-        if (context.packageName != HOST_PACKAGE) return false
+        if (context.packageName != API3_HOST_PACKAGE) return false
         // Read the host field: linking the API const directly would inline the plugin SDK's 3.
-        val apiVersion = runCatching {
-            Class.forName("io.nightfish.lightnovelreader.api.ApiMetadata", false, context.classLoader)
-                .getField("API_VERSION").getInt(null)
-        }.getOrDefault(-1)
-        if (!supportsHost(context.packageName, apiVersion)) return false
+        val apiVersion = Class.forName("io.nightfish.lightnovelreader.api.ApiMetadata", false, context.classLoader)
+            .getField("API_VERSION").getInt(null)
+        if (apiVersion != 3) return false
         val dao = field(userData, "userDataDao")
-        room = fields(dao.javaClass).mapNotNull { f -> f.getAccessible(dao) }.single {
+        val room = fields(dao.javaClass).mapNotNull { f -> f.getAccessible(dao) }.single {
             inherits(it.javaClass, HOST + "data.local.room.LightNovelReaderDatabase")
         }
         val helper = room.javaClass.getMethod("getOpenHelper").invoke(room)
         // u is the official API 3 R8 name of getWritableDatabase.
         val writable = helper.javaClass.methods.filter { it.parameterCount == 0 && it.name in setOf("getWritableDatabase", "u") }
         require(writable.size == 1) { "无法识别宿主 Room 连接" }
-        val supportDb = checkNotNull(writable.single().invoke(helper))
+        val supportDb = checkNotNull(writable.first().invoke(helper))
         database = fields(supportDb.javaClass).filter { it.type == SQLiteDatabase::class.java }
             .map { it.getAccessible(supportDb) as SQLiteDatabase }.single()
         require(database.isOpen && !database.isReadOnly && database.version == 17) { "不支持的宿主数据库" }
@@ -98,13 +95,12 @@ internal class Api3HostAdapter(
             when {
                 source !in setOf(MigrationData.TW_SOURCE_ID, MigrationData.CURRENT_SOURCE_ID) -> MigrationLoadResult.Disabled
                 source == MigrationData.CURRENT_SOURCE_ID && activeReceipt() != MigrationReceiptStatus.Absent -> MigrationLoadResult.Disabled
-                source == MigrationData.TW_SOURCE_ID -> if (planner.hasRecoverableData(readActive(source)))
+                source == MigrationData.TW_SOURCE_ID -> if (MigrationPlanner.hasRecoverableData(readActive(source)))
                     MigrationLoadResult.Candidate else MigrationLoadResult.Disabled
-                source == MigrationData.CURRENT_SOURCE_ID -> {
+                else -> {
                     val tw = codec.readTwSource(snapshotFile(MigrationData.TW_SOURCE_ID), snapshotFile(-1))?.snapshot
-                    if (tw != null && planner.hasRecoverableData(tw)) MigrationLoadResult.Candidate else MigrationLoadResult.Disabled
+                    if (tw != null && MigrationPlanner.hasRecoverableData(tw)) MigrationLoadResult.Candidate else MigrationLoadResult.Disabled
                 }
-                else -> MigrationLoadResult.Disabled
             }
         }
     } catch (failure: Exception) {
@@ -160,7 +156,7 @@ internal class Api3HostAdapter(
         }
         val current = if (source == MigrationData.CURRENT_SOURCE_ID) active else inactive
         val tw = if (source == MigrationData.TW_SOURCE_ID) active else inactive
-        if (!planner.plan(current, tw).hasRecoverableData) {
+        if (!MigrationPlanner.plan(current, tw).hasRecoverableData) {
             return Prepared.Finished(MigrationAttemptResult.NoWork(MigrationReason.NoData))
         }
         checkSnapshotStamps(stamps)
@@ -181,7 +177,6 @@ internal class Api3HostAdapter(
 
     private fun commit(prepared: Preparation, admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult {
         var began = false
-        var markedSuccessful = false
         var ended = false
         var failure: Exception? = null
         var skipped: MigrationAttemptResult.NoWork? = null
@@ -196,7 +191,6 @@ internal class Api3HostAdapter(
             if (completion == MigrationReceiptStatus.Present) {
                 // No second write when a receipt was committed since preflight.
                 database.setTransactionSuccessful()
-                markedSuccessful = true
             } else if (completion == MigrationReceiptStatus.Untrusted) {
                 skipped = MigrationAttemptResult.NoWork(MigrationReason.UntrustedCompletion)
             } else {
@@ -206,8 +200,8 @@ internal class Api3HostAdapter(
                 // Re-read live activity data under the write transaction; never commit the stale preflight copy.
                 val current = if (prepared.activeSourceId == MigrationData.CURRENT_SOURCE_ID) active else prepared.current
                 val tw = if (prepared.activeSourceId == MigrationData.TW_SOURCE_ID) active else prepared.tw
-                val plan = planner.plan(current, tw) { done, count ->
-                    onProgress(MigrationProgress(if (count > 0 && done == count) MigrationStage.Saving else MigrationStage.Merging, done, count))
+                val plan = MigrationPlanner.plan(current, tw) { done, count ->
+                    onProgress(MigrationProgress(if (done == count) MigrationStage.Saving else MigrationStage.Merging, done, count))
                 }
                 if (!plan.hasRecoverableData) skipped = MigrationAttemptResult.NoWork(MigrationReason.NoData) else {
                     onProgress(MigrationProgress(MigrationStage.Saving, plan.bookCount, plan.bookCount))
@@ -225,7 +219,6 @@ internal class Api3HostAdapter(
                     // extra business work may be inserted between this check and marking success.
                     admissionCheck()
                     database.setTransactionSuccessful()
-                    markedSuccessful = true
                 }
             }
         } catch (error: Exception) {
@@ -245,29 +238,22 @@ internal class Api3HostAdapter(
         val exit = when {
             !began -> MigrationTransactionExit.NotStarted
             !ended -> MigrationTransactionExit.Unknown
-            markedSuccessful -> MigrationTransactionExit.Committed
             else -> MigrationTransactionExit.RolledBack
         }
         // Never inspect our own uncommitted receipt. Unknown exit remains non-retryable even
         // when an independent, stable lookup reports no receipt.
         val completion = if (exit == MigrationTransactionExit.Unknown) {
             onProgress(MigrationProgress(MigrationStage.Verifying))
-            inspectCompletion(prepared.activeSourceId)
+            inspectCompletion()
         } else MigrationCompletion.Unknown
         return migrationResultAfterFailure(exit, completion, notCommitted(error))
     }
 
-    private fun inspectCompletion(originalSource: Int): MigrationCompletion = try {
+    private fun inspectCompletion(): MigrationCompletion = try {
         assertStorageIdentity()
         if (database.inTransaction()) MigrationCompletion.Unknown else inTransaction {
-            val source = selectedSource()
-            if (source != MigrationData.CURRENT_SOURCE_ID && source != originalSource) return@inTransaction MigrationCompletion.Unknown
-            val completion = activeReceipt()
-            when {
-                source == MigrationData.CURRENT_SOURCE_ID && completion == MigrationReceiptStatus.Present -> MigrationCompletion.Present
-                source == originalSource && completion == MigrationReceiptStatus.Absent -> MigrationCompletion.Absent
-                else -> MigrationCompletion.Unknown
-            }
+            if (selectedSource() != MigrationData.CURRENT_SOURCE_ID) return@inTransaction MigrationCompletion.Unknown
+            if (activeReceipt() == MigrationReceiptStatus.Present) MigrationCompletion.Present else MigrationCompletion.Unknown
         }
     } catch (failure: Exception) {
         Log.w("LinovelibMigration", "Migration completion could not be verified", failure)
@@ -285,7 +271,7 @@ internal class Api3HostAdapter(
     }
 
     private fun assertStorageIdentity() {
-        require(::database.isInitialized && database.isOpen && !database.isReadOnly && database.version == 17)
+        require(database.isOpen && !database.isReadOnly && database.version == 17)
         require(File(database.path).canonicalFile == context.getDatabasePath("light_novel_reader_database").canonicalFile)
         require(field(localDataManager, "userDataDao") === field(userData, "userDataDao"))
     }
@@ -419,7 +405,6 @@ internal class Api3HostAdapter(
 
     private fun readValue(cursor: Cursor, column: Column): JsonElement {
         val index = cursor.getColumnIndexOrThrow(column.column)
-        require(!cursor.isNull(index)) { "宿主字段为空：${column.column}" }
         val expectedTypes = when (column.kind) {
             Kind.Integer, Kind.Boolean, Kind.Date, Kind.Time -> setOf(Cursor.FIELD_TYPE_INTEGER)
             Kind.Float -> setOf(Cursor.FIELD_TYPE_FLOAT, Cursor.FIELD_TYPE_INTEGER)
@@ -466,7 +451,7 @@ internal class Api3HostAdapter(
             Kind.Count -> values.put(column.column, Base64.decode(actual.jsonPrimitive.content, Base64.DEFAULT))
             Kind.Progress -> values.put(column.column, progressToBytes(actual.jsonObject.mapValues { it.value.jsonPrimitive.float }))
             Kind.WordCount -> values.put(column.column, actual.jsonObject.let {
-                "${it.getValue("count").jsonPrimitive.int}|.:.|${it["unit"]?.jsonPrimitive?.content ?: "null"}|.:.|${it["unitResId"]?.jsonPrimitive?.content ?: "null"}"
+                "${it.getValue("count").jsonPrimitive.int}|.:.|${it.getValue("unit").jsonPrimitive.content}|.:.|${it.getValue("unitResId").jsonPrimitive.content}"
             })
         }
     }
@@ -488,15 +473,12 @@ internal class Api3HostAdapter(
 
     companion object {
         const val RECEIPT_PATH = "linovelib.migration.tw.v1.receipt"
-        fun supportsHost(packageName: String, apiVersion: Int): Boolean =
-            packageName == HOST_PACKAGE && apiVersion == 3
         /** Only fields with declared API 3 entity defaults may be omitted on the CBOR wire. */
         fun missingFieldValue(field: String): JsonElement = when (field) {
             "sortReversed", "isFinished", "isFavorited" -> JsonPrimitive(false)
             else -> error("缺少宿主字段：$field")
         }
-        private const val HOST = "indi.dmzz_yyhyy.lightnovelreader."
-        private const val HOST_PACKAGE = "indi.dmzz_yyhyy.lightnovelreader"
+        private const val HOST = "$API3_HOST_PACKAGE."
         private const val SOURCE_PATH = MigrationSnapshotCodec.SOURCE_PATH
         // The released host contains a shrunk j$.time library. Avoid new time overloads here.
         fun dateFromSql(value: Int): String {

@@ -1,6 +1,5 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import com.sun.net.httpserver.HttpServer
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -11,7 +10,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.net.InetSocketAddress
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
@@ -105,33 +103,22 @@ class LinovelibHttpClientTest {
 
     @Test
     fun `a missing resource fails its request without marking the source offline`() = runBlocking {
-        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
-        server.createContext("/") { exchange ->
+        LinovelibHttpTestSite { exchange ->
             val missing = exchange.requestURI.path == "/missing"
-            val body = if (missing) "Missing" else "Available"
-            exchange.responseHeaders.add("Content-Type", "text/html; charset=UTF-8")
-            val bytes = body.toByteArray()
-            exchange.sendResponseHeaders(if (missing) 404 else 200, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
-        }
-        server.start()
-        try {
-            val host = "http://127.0.0.1:${server.address.port}"
+            exchange.respond(if (missing) 404 else 200, if (missing) "Missing" else "Available")
+        }.use { site ->
             val client = LinovelibHttpClient(
-                host = host,
+                host = site.host,
                 diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
                 requestCoordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
             )
-            assertEquals("Available", client.loadHtml(host))
+            assertEquals("Available", client.loadHtml(site.host))
 
-            val failure = runCatching { client.loadHtml("$host/missing") }.exceptionOrNull()
+            val failure = runCatching { client.loadHtml("${site.host}/missing") }.exceptionOrNull()
 
             assertTrue(failure is LinovelibHttpStatusException)
-            assertEquals(404, (failure as LinovelibHttpStatusException).statusCode)
-            assertEquals("$host/missing", failure.url)
+            assertEquals("HTTP 404 for ${site.host}/missing", failure?.message)
             assertFalse(client.isOffLineFlow.value)
-        } finally {
-            server.stop(0)
         }
     }
 

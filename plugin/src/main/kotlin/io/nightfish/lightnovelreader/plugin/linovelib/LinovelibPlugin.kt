@@ -2,9 +2,6 @@ package io.nightfish.lightnovelreader.plugin.linovelib
 
 import android.content.Context
 import android.util.Log
-import io.nightfish.lightnovelreader.api.book.BookRepositoryApi
-import io.nightfish.lightnovelreader.api.book.LocalBookDataSourceApi
-import io.nightfish.lightnovelreader.api.bookshelf.BookshelfRepositoryApi
 import io.nightfish.lightnovelreader.api.plugin.LightNovelReaderPlugin
 import io.nightfish.lightnovelreader.api.plugin.Plugin
 import io.nightfish.lightnovelreader.api.userdata.UserDataRepositoryApi
@@ -27,14 +24,11 @@ import io.nightfish.lightnovelreader.plugin.linovelib.migration.LinovelibMigrati
 class LinovelibPlugin(
     context: Context,
     userData: UserDataRepositoryApi,
-    localBooks: LocalBookDataSourceApi,
-    bookshelves: BookshelfRepositoryApi,
-    books: BookRepositoryApi,
     private val sourceManager: WebBookDataSourceManagerApi,
 ) : LightNovelReaderPlugin {
     private val source = LinovelibWebDataSource(context)
     private val hostSource = LinovelibHostDataSource.wrap(source, source::openRelatedPage)
-    private val migration = LinovelibMigrationController(context, userData, localBooks, bookshelves, books, sourceManager)
+    private val migration = LinovelibMigrationController(context, userData)
 
     override fun onLoad() {
         Log.i("LinovelibPlugin", "Linovelib plugin loaded")

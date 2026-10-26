@@ -3,11 +3,11 @@ package io.nightfish.lightnovelreader.plugin.linovelib.migration
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.booleanOrNull
-import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.double
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.intOrNull
 import java.security.MessageDigest
 import java.time.LocalDateTime
@@ -16,7 +16,6 @@ import java.time.LocalTime
 /** Pure local merge. The host adapter owns transactions and the once-only receipt. */
 internal object MigrationPlanner {
     private val json = Json
-    private val numericId = Regex("[1-9][0-9]*")
     private val chapterIdPattern = Regex("linovelib-v3:[1-9][0-9]*")
     private val base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
@@ -58,17 +57,17 @@ internal object MigrationPlanner {
         }.toMap().toMutableMap()
         val volumeOwners = targetVolumes.flatMap { (book, volumes) -> volumes.map { it.string("volumeId") to book } }
             .toMap().toMutableMap()
-        val rejectedIncomingCatalogs = mutableSetOf<String>()
         books.forEachIndexed { index, book ->
             val availableTarget = targetVolumes[book].orEmpty().sortedBy { it.int("index") }
             val useTarget = availableTarget.sumOf { it.stringList("chapterIds").size } > 0
-            val incoming = oldVolumes[book].orEmpty().sortedBy { it.int("index") }
-            val incomingConflicts = incoming.any { volume ->
-                volumeOwners[volume.string("volumeId")]?.let { it != book } == true ||
-                    volume.stringList("chapterIds").any { id -> chapterOwners[id]?.let { it != book } == true }
+            val selected = if (useTarget) availableTarget else {
+                val incoming = oldVolumes[book].orEmpty().sortedBy { it.int("index") }
+                val incomingConflicts = incoming.any { volume ->
+                    volumeOwners[volume.string("volumeId")]?.let { it != book } == true ||
+                        volume.stringList("chapterIds").any { id -> chapterOwners[id]?.let { it != book } == true }
+                }
+                incoming.takeUnless { incomingConflicts }.orEmpty()
             }
-            val selected = if (useTarget) availableTarget else incoming.takeUnless { incomingConflicts }.orEmpty()
-            if (incomingConflicts) rejectedIncomingCatalogs += book
             val chapterMap = if (useTarget) targetChapters else oldChapters
             chosenVolumes += selected
             var count = 0
@@ -83,15 +82,24 @@ internal object MigrationPlanner {
             catalogSizes[book] = count
             onProgress(index + 1, books.size)
         }
-        checkUnique(chosenVolumes, "volumeId")
         output["volumeEntities"] = chosenVolumes.asArray()
         // Preserve standalone chapter metadata too. Chosen whole catalogs override its title.
-        val chapters = preferRows(targetChapters.values.toList(), oldChapters.values.toList(), "id") { true }
-            .associateByTo(LinkedHashMap()) { it.string("id") }
+        val chapters = LinkedHashMap(targetChapters)
+        oldChapters.forEach { (id, row) -> if (id !in chapters) chapters[id] = row }
         chapters.putAll(chosenChapters)
         output["chapterInformationEntities"] = chapters.values.toList().asArray()
         val bodies = preferRows(target.rows("chapterContentEntities"), old.rows("chapterContentEntities"), "id", ::hasBody)
         output["chapterContentEntities"] = bodies.asArray()
+        val completeCacheBooks = if (sequenceOf(target, old).any { data ->
+            data.rows("userDataEntities").any { it.string("path") == MigrationData.COMPLETED_DOWNLOADS }
+        }) {
+            val validBodies = bodies.filter(::hasBody).map { it.string("id") }.toSet()
+            chosenVolumes.groupBy { it.string("bookId") }
+                .filterValues { group ->
+                    val ids = group.flatMap { it.stringList("chapterIds") }
+                    ids.isNotEmpty() && validBodies.containsAll(ids)
+                }.keys
+        } else emptySet()
 
         val reservedShelfIds = targetState.preservedPersonalRows["bookshelfEntities"].orEmpty()
             .mapNotNull { (it["id"] as? JsonPrimitive)?.takeUnless(JsonPrimitive::isString)?.intOrNull }.toSet()
@@ -107,30 +115,22 @@ internal object MigrationPlanner {
         }.asArray()
         val reading = mergeKeyed(target.rows("userReadingDataEntities"), old.rows("userReadingDataEntities"),
             { it.string("id") }, ::mergeReading).map { row ->
-            val count = catalogSizes[row.string("id")] ?: 0
+            val count = catalogSizes.getValue(row.string("id"))
             if (count == 0) row else {
                 val sum = row.objectField("maxChapterReadingProgressMap").values.sumOf { it.progress() }
                 row.with("readingProgress" to JsonPrimitive((sum / count).coerceIn(0.0, 1.0).toFloat()))
             }
         }
         output["userReadingDataEntities"] = reading.asArray()
-        output["userDataEntities"] = mergeUserData(target, old, reading, chosenVolumes, bodies).asArray()
+        output["userDataEntities"] = mergeUserData(target, old, reading, completeCacheBooks).asArray()
         targetState.preservedPersonalRows.forEach { (table, preserved) ->
-            val protected = targetState.protectedKeys[table].orEmpty()
+            val protected = targetState.protectedKeys.getValue(table)
             val merged = (output[table] as JsonArray).map { it as JsonObject }
                 .filterNot { MigrationNormalizer.personalKey(table, it) in protected }
             output[table] = (merged + preserved).asArray()
         }
-        output["webBookDataSourceId"] = JsonPrimitive(MigrationData.CURRENT_SOURCE_ID)
-        val acceptedIncoming = JsonObject(old.toMutableMap().apply {
-            put("volumeEntities", old.rows("volumeEntities").filterNot { it.string("bookId") in rejectedIncomingCatalogs }.asArray())
-        })
         return MigrationPlan(MigrationSnapshot(MigrationData.CURRENT_SOURCE_ID, JsonObject(output)), personalFingerprint(tw), books.size,
-            MigrationNormalizer.containsRecoverableData(withRecoverableDownloads(acceptedIncoming, chosenVolumes, bodies)))
-    }
-
-    fun validate(snapshot: MigrationSnapshot) {
-        if (snapshot.sourceId == MigrationData.TW_SOURCE_ID) MigrationNormalizer.tw(snapshot) else MigrationNormalizer.current(snapshot)
+            MigrationNormalizer.containsRecoverableData(withRecoverableDownloads(old, completeCacheBooks)))
     }
 
     fun hasRecoverableData(snapshot: MigrationSnapshot): Boolean =
@@ -142,13 +142,13 @@ internal object MigrationPlanner {
             "dailyCountEntities", "userReadingDataEntities")
         val personal = JsonObject(buildMap {
             fields.forEach { field ->
-                val rows = (snapshot.data[field] as? JsonArray).orEmpty()
-                    .filterNot { field == "userReadingDataEntities" && (it as? JsonObject)?.get("id") == JsonPrimitive("") }
+                val rows = (snapshot.data.getValue(field) as JsonArray)
+                    .filterNot { field == "userReadingDataEntities" && (it as JsonObject)["id"] == JsonPrimitive("") }
                 put(field, JsonArray(rows.map(::canonical).sortedBy(JsonElement::toString)))
             }
-            put("userDataEntities", JsonArray((snapshot.data["userDataEntities"] as? JsonArray).orEmpty()
+            put("userDataEntities", JsonArray((snapshot.data.getValue("userDataEntities") as JsonArray)
                 .filter { row ->
-                    val path = ((row as? JsonObject)?.get("path") as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
+                    val path = ((row as JsonObject)["path"] as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
                     path == null || path in setOf(MigrationData.READING_BOOKS, MigrationData.COMPLETED_DOWNLOADS)
                 }
                 .map(::canonical).sortedBy(JsonElement::toString)))
@@ -178,14 +178,11 @@ internal object MigrationPlanner {
         return JsonObject(output)
     }
 
-    private fun withRecoverableDownloads(data: JsonObject, volumes: List<JsonObject>, bodies: List<JsonObject>): JsonObject {
-        val availableChapters = volumes.groupBy { it.string("bookId") }
-            .mapValues { (_, group) -> group.flatMap { it.stringList("chapterIds") } }
-        val validBodies = bodies.filter(::hasBody).map { it.string("id") }.toSet()
+    private fun withRecoverableDownloads(data: JsonObject, completeCacheBooks: Set<String>): JsonObject {
         val userData = data.rows("userDataEntities").map { row ->
             if (row.string("path") != MigrationData.COMPLETED_DOWNLOADS) row else {
                 val recoverable = downloads(row).filter { (type, book) ->
-                    type == "CACHE" && availableChapters[book].orEmpty().let { it.isNotEmpty() && validBodies.containsAll(it) }
+                    type == "CACHE" && book in completeCacheBooks
                 }
                 row.with("value" to JsonPrimitive(recoverable.joinToString(", ") { "${it.first}|${it.second}" }))
             }
@@ -203,7 +200,7 @@ internal object MigrationPlanner {
     )
 
     private fun mergeReading(a: JsonObject, b: JsonObject): JsonObject {
-        val hasTargetPosition = a.string("lastReadChapterId").isNotBlank()
+        val hasTargetPosition = a.string("lastReadChapterId").isNotEmpty()
         val leftTime = a.int("totalReadTime"); val rightTime = b.int("totalReadTime")
         val total = if (leftTime == -1 && rightTime == -1) -1 else sumIntOrCurrent(leftTime.coerceAtLeast(0), rightTime.coerceAtLeast(0))
         val currentProgress = LinkedHashMap(b.objectField("currentChapterReadingProgressMap"))
@@ -215,8 +212,8 @@ internal object MigrationPlanner {
         return a.with(
             "lastReadTime" to JsonPrimitive(maxOf(dateTime(a.string("lastReadTime")), dateTime(b.string("lastReadTime"))).toString()),
             "totalReadTime" to JsonPrimitive(total),
-            "lastReadChapterId" to (if (hasTargetPosition) a else b).required("lastReadChapterId"),
-            "lastReadChapterTitle" to (if (hasTargetPosition) a else b).required("lastReadChapterTitle"),
+            "lastReadChapterId" to (if (hasTargetPosition) a else b).getValue("lastReadChapterId"),
+            "lastReadChapterTitle" to (if (hasTargetPosition) a else b).getValue("lastReadChapterTitle"),
             "currentChapterReadingProgressMap" to JsonObject(currentProgress),
             "maxChapterReadingProgressMap" to JsonObject(maximum),
         )
@@ -225,16 +222,14 @@ internal object MigrationPlanner {
     private fun mergeShelves(target: JsonObject, old: JsonObject, reservedIds: Set<Int>): Pair<List<JsonObject>, List<JsonObject>> {
         val result = target.rows("bookshelfEntities").associateByTo(LinkedHashMap()) { it.int("id") }
         val names = result.values.groupBy { it.string("name") }.mapValues { (_, value) -> value.first().int("id") }.toMutableMap()
-        val mapping = mutableMapOf<Int, Int>()
         var nextId = 0
         old.rows("bookshelfEntities").sortedBy { it.int("id") }.forEach { shelf ->
             val id = names[shelf.string("name")] ?: shelf.int("id").takeUnless { it in result || it in reservedIds } ?: run {
-                while (nextId in result || nextId in reservedIds || nextId == -1) {
+                while (nextId in result || nextId in reservedIds) {
                     checkData(nextId < Int.MAX_VALUE, "无法分配书架 ID"); nextId++
                 }
                 nextId
             }
-            mapping[shelf.int("id")] = id
             val existing = result[id]
             result[id] = if (existing != null) existing.with(
                 "allBookIds" to (existing.stringList("allBookIds") + shelf.stringList("allBookIds")).distinct().stringArray(),
@@ -243,19 +238,12 @@ internal object MigrationPlanner {
             ) else shelf.with(
                 "id" to JsonPrimitive(id), "sortType" to JsonPrimitive("default"), "sortReversed" to JsonPrimitive(false),
                 "autoCache" to JsonPrimitive(false), "systemUpdateReminder" to JsonPrimitive(false),
-                "allBookIds" to shelf.stringList("allBookIds").distinct().stringArray(),
-                "pinnedBookIds" to shelf.stringList("pinnedBookIds").distinct().stringArray(),
-                "updatedBookIds" to shelf.stringList("updatedBookIds").distinct().stringArray(),
             )
             names[shelf.string("name")] = id
         }
-        val oldMetadata = old.rows("bookshelfBookMetadataEntities").map { row ->
-            row.with("bookShelfIds" to JsonArray(row.intList("bookShelfIds").mapNotNull { mapping[it]?.let(::JsonPrimitive) }.distinct()))
-        }
-        val metadata = mergeKeyed(target.rows("bookshelfBookMetadataEntities"), oldMetadata, { it.string("id") }) { a, b ->
+        val metadata = mergeKeyed(target.rows("bookshelfBookMetadataEntities"), old.rows("bookshelfBookMetadataEntities"), { it.string("id") }) { a, b ->
             a.with(
                 "lastUpdate" to JsonPrimitive(maxOf(dateTime(a.string("lastUpdate")), dateTime(b.string("lastUpdate"))).toString()),
-                "bookShelfIds" to JsonArray((a.intList("bookShelfIds") + b.intList("bookShelfIds")).distinct().map(::JsonPrimitive)),
             )
         }.map { row ->
             // Recompute reverse membership from the merged forward lists, preserving its timestamp.
@@ -273,7 +261,7 @@ internal object MigrationPlanner {
     }
 
     private fun mergeUserData(
-        target: JsonObject, old: JsonObject, reading: List<JsonObject>, volumes: List<JsonObject>, bodies: List<JsonObject>,
+        target: JsonObject, old: JsonObject, reading: List<JsonObject>, completeCacheBooks: Set<String>,
     ): List<JsonObject> {
         val result = target.rows("userDataEntities").associateByTo(LinkedHashMap()) { it.string("path") }
         val oldRows = old.rows("userDataEntities").associateBy { it.string("path") }
@@ -290,37 +278,21 @@ internal object MigrationPlanner {
         val targetComplete = result[MigrationData.COMPLETED_DOWNLOADS]
         val oldComplete = oldRows[MigrationData.COMPLETED_DOWNLOADS]
         if (targetComplete != null || oldComplete != null) {
-            val validBodies = bodies.filter(::hasBody).map { it.string("id") }.toSet()
-            val availableChapters = volumes.groupBy { it.string("bookId") }.mapValues { (_, group) -> group.flatMap { it.stringList("chapterIds") } }
             val complete = (targetComplete?.let(::downloads).orEmpty() + oldComplete?.let(::downloads).orEmpty().filter { it.first == "CACHE" })
-                .distinct().filter { (type, book) -> type != "CACHE" || availableChapters[book].orEmpty().let { it.isNotEmpty() && validBodies.containsAll(it) } }
+                .distinct().filter { (type, book) -> type != "CACHE" || book in completeCacheBooks }
             result[MigrationData.COMPLETED_DOWNLOADS] = (targetComplete ?: oldComplete!!).with(
                 "value" to JsonPrimitive(complete.joinToString(", ") { "${it.first}|${it.second}" }),
             )
         }
-        result[MigrationData.SELECTED_SOURCE]?.let { row ->
-            result[MigrationData.SELECTED_SOURCE] = row.with("value" to JsonPrimitive(MigrationData.CURRENT_SOURCE_ID.toString()))
-        }
         return result.values.toList()
     }
 
-    private fun downloads(row: JsonObject): List<Pair<String, String>> {
-        checkData(row.string("type") == "CompletedDownloadItemList", "下载完成记录类型非法")
-        return commaList(row.string("value")).map { item ->
-            val pair = item.split('|')
-            checkData(pair.size == 2 && pair[0] in setOf("CACHE", "EPUB_EXPORT"), "下载完成记录无效")
-            bookId(pair[1]); pair[0] to pair[1]
-        }
+    private fun downloads(row: JsonObject): List<Pair<String, String>> = commaList(row.string("value")).map { item ->
+        val pair = item.split('|')
+        pair[0] to pair[1]
     }
 
-    private fun body(row: JsonObject): JsonObject {
-        val raw = row.string("content")
-        val parsed = try { json.parseToJsonElement(raw) } catch (_: IllegalArgumentException) { fail("正文 JSON 无效") }
-        checkData(parsed is JsonObject, "正文不是 JSON 对象")
-        val components = (parsed as JsonObject)["components"]
-        checkData(components == null || components is JsonArray, "正文组件列表无效")
-        return parsed
-    }
+    private fun body(row: JsonObject): JsonObject = json.parseToJsonElement(row.string("content")) as JsonObject
 
     private fun hasBody(row: JsonObject): Boolean = (body(row)["components"] as? JsonArray)?.isNotEmpty() == true
 
@@ -365,7 +337,6 @@ internal object MigrationPlanner {
     }
 
     internal fun encodeHours(hours: IntArray): String {
-        checkData(hours.size == 24 && hours.all { it in 0..60 }, "小时统计数值无效")
         val bytes = ByteArray(18)
         hours.forEachIndexed { hour, minutes ->
             for (bit in 0 until 6) {
@@ -384,57 +355,28 @@ internal object MigrationPlanner {
         }
     }
 
-    private fun JsonObject.rows(field: String): List<JsonObject> = (required(field) as? JsonArray
-        ?: fail("缺少数据表：$field")).map { it as? JsonObject ?: fail("数据表包含非对象记录：$field") }
-    private fun JsonObject.required(field: String): JsonElement = this[field] ?: fail("缺少字段：$field")
-    private fun JsonObject.string(field: String): String {
-        val value = required(field) as? JsonPrimitive ?: fail("字段不是字符串：$field")
-        checkData(value.isString, "字段不是字符串：$field")
-        return value.content
-    }
-    private fun JsonObject.int(field: String): Int {
-        val value = required(field) as? JsonPrimitive ?: fail("字段不是整数：$field")
-        checkData(!value.isString, "字段不是整数：$field")
-        return value.intOrNull ?: fail("整数字段超出范围：$field")
-    }
-    private fun JsonObject.bool(field: String, default: Boolean? = null): Boolean {
-        val value = this[field] ?: return default ?: fail("缺少字段：$field")
-        return (value as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull ?: fail("字段不是布尔值：$field")
-    }
-    private fun JsonObject.stringList(field: String): List<String> = (required(field) as? JsonArray ?: fail("字段不是列表：$field")).map {
-        val value = it as? JsonPrimitive ?: fail("列表元素不是字符串：$field")
-        checkData(value.isString, "列表元素不是字符串：$field"); value.content
-    }
-    private fun JsonObject.intList(field: String): List<Int> = (required(field) as? JsonArray ?: fail("字段不是列表：$field")).map {
-        (it as? JsonPrimitive)?.takeIf { value -> !value.isString }?.intOrNull ?: fail("列表元素不是整数：$field")
-    }
-    private fun JsonObject.objectField(field: String): JsonObject = required(field) as? JsonObject ?: fail("字段不是对象：$field")
-    private fun JsonElement.progress(): Double {
-        val value = (this as? JsonPrimitive)?.takeIf { !it.isString }?.doubleOrNull ?: fail("阅读进度不是数值")
-        checkData(value.isFinite() && value in 0.0..1.0, "阅读进度超出范围")
-        return value
-    }
+    // Merge helpers only see normalized rows. Uninterpretable current personal rows are
+    // restored after merging; their raw fields never pass through these accessors.
+    private fun JsonObject.rows(field: String): List<JsonObject> = (getValue(field) as JsonArray).map { it as JsonObject }
+    private fun JsonObject.string(field: String): String = (getValue(field) as JsonPrimitive).content
+    private fun JsonObject.int(field: String): Int = (getValue(field) as JsonPrimitive).int
+    private fun JsonObject.bool(field: String, default: Boolean): Boolean = (this[field] as JsonPrimitive?)?.boolean ?: default
+    private fun JsonObject.stringList(field: String): List<String> = (getValue(field) as JsonArray).map { (it as JsonPrimitive).content }
+    private fun JsonObject.objectField(field: String): JsonObject = getValue(field) as JsonObject
+    private fun JsonElement.progress(): Double = (this as JsonPrimitive).double
     private fun JsonObject.with(vararg fields: Pair<String, JsonElement>) = JsonObject(toMutableMap().apply { putAll(fields) })
     private fun List<JsonObject>.asArray() = JsonArray(this)
     private fun List<String>.stringArray() = JsonArray(map(::JsonPrimitive))
-    private fun commaList(value: String): List<String> = if (value.isBlank()) emptyList() else value.split(',').map { it.trim() }.also {
-        checkData(it.all(String::isNotEmpty), "列表包含空记录")
-    }
-    private fun bookId(id: String) { checkData(numericId.matches(id), "不支持的书籍 ID：$id") }
+    private fun commaList(value: String): List<String> = if (value.isBlank()) emptyList() else value.split(',').map(String::trim)
     private fun sumIntOrCurrent(a: Int, b: Int): Int {
         val sum = a.toLong() + b.toLong()
-        return if (sum in 0..Int.MAX_VALUE.toLong()) sum.toInt() else a
+        return if (sum <= Int.MAX_VALUE.toLong()) sum.toInt() else a
     }
-    private fun dateTime(value: String): LocalDateTime = try { LocalDateTime.parse(value) } catch (_: Exception) { fail("阅读时间无效") }
-    private fun time(value: String): LocalTime = try { LocalTime.parse(value) } catch (_: Exception) { fail("阅读时刻无效") }
-    private fun checkUnique(rows: List<JsonObject>, field: String) = checkUnique(rows) { it.required(field).toString() }
-    private fun checkUnique(rows: List<JsonObject>, key: (JsonObject) -> String) {
-        checkData(rows.map(key).distinct().size == rows.size, "数据表包含重复主键")
-    }
+    private fun dateTime(value: String): LocalDateTime = LocalDateTime.parse(value)
+    private fun time(value: String): LocalTime = LocalTime.parse(value)
     private fun canonical(element: JsonElement): JsonElement = when (element) {
         is JsonObject -> JsonObject(element.toSortedMap().mapValues { canonical(it.value) })
         is JsonArray -> JsonArray(element.map(::canonical))
-        JsonNull -> JsonNull
         else -> element
     }
     private fun checkData(condition: Boolean, message: String) { if (!condition) fail(message) }

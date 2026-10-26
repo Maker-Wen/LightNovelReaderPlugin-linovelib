@@ -3,7 +3,6 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 internal class LinovelibRequestCoordinator(
@@ -12,7 +11,7 @@ internal class LinovelibRequestCoordinator(
 ) {
     private val nextTicket = AtomicLong(0L)
     private val servingTicket = AtomicLong(0L)
-    private val cancelledTickets = ConcurrentHashMap.newKeySet<Long>()
+    private val cancelledTickets = mutableSetOf<Long>()
     private val ticketLock = Any()
     private val stateLock = Any()
     private var lastRequestStartedAtMillis = 0L
@@ -22,38 +21,37 @@ internal class LinovelibRequestCoordinator(
         cooldownAfter: (Result<T>) -> Long? = { null },
         block: suspend () -> T
     ): T {
-        val ticket = acquireRequestSlot()
+        acquireRequestSlot()
         try {
             awaitRequestWindow()
             val result = runCatching { block() }
             cooldownAfter(result)?.takeIf { it > 0L }?.let(::scheduleCooldown)
             return result.getOrThrow()
         } finally {
-            releaseRequestSlot(ticket)
+            releaseRequestSlot()
         }
     }
 
-    fun scheduleCooldown(delayMillis: Long) {
+    private fun scheduleCooldown(delayMillis: Long) {
         synchronized(stateLock) {
             blockedUntilMillis = maxOf(blockedUntilMillis, clock() + delayMillis)
         }
     }
 
-    private suspend fun acquireRequestSlot(): Long {
+    private suspend fun acquireRequestSlot() {
         val ticket = nextTicket.getAndIncrement()
         var acquired = false
         try {
             while (servingTicket.get() != ticket) delay(REQUEST_SLOT_POLL_MILLIS)
             currentCoroutineContext().ensureActive()
             acquired = true
-            return ticket
         } finally {
             if (!acquired) cancelTicket(ticket)
         }
     }
 
-    private fun releaseRequestSlot(ticket: Long) = synchronized(ticketLock) {
-        if (servingTicket.get() == ticket) servingTicket.incrementAndGet()
+    private fun releaseRequestSlot() = synchronized(ticketLock) {
+        servingTicket.incrementAndGet()
         skipCancelledTickets()
     }
 
@@ -79,7 +77,7 @@ internal class LinovelibRequestCoordinator(
                 if (requestWaitMillis(startedAt) > 0L) {
                     false
                 } else {
-                    if (blockedUntilMillis <= startedAt) blockedUntilMillis = 0L
+                    blockedUntilMillis = 0L
                     lastRequestStartedAtMillis = startedAt
                     true
                 }
@@ -94,7 +92,7 @@ internal class LinovelibRequestCoordinator(
             now,
             minimumRequestIntervalMillis
         )
-        val cooldownDelay = (blockedUntilMillis - now).coerceAtLeast(0L)
+        val cooldownDelay = blockedUntilMillis - now
         return maxOf(intervalDelay, cooldownDelay)
     }
 

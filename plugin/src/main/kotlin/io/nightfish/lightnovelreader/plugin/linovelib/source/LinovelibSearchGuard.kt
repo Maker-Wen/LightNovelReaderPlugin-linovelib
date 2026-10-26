@@ -1,11 +1,12 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 internal object LinovelibSearchGuard {
-    fun extractCookieValue(body: String, name: String): String =
-        Regex("""(?:^|[\"'])${Regex.escape(name)}=([^;\"']+)""")
-            .find(body)
+    private val JS_COOKIE = Regex("""(?:^|[\"'])jieqiSearchJs=([^;\"']+)""")
+
+    fun extractJsToken(body: String): String =
+        JS_COOKIE.find(body)
             ?.groupValues
-            ?.getOrNull(1)
+            ?.get(1)
             .orEmpty()
 
     fun guardCookies(jsToken: String, cssToken: String): Map<String, String> = mapOf(
@@ -13,7 +14,4 @@ internal object LinovelibSearchGuard {
         "jieqiSearchJs" to jsToken,
         "jieqiSearchCss" to cssToken
     )
-
-    fun ticketCookies(ticketToken: String): Map<String, String> =
-        mapOf("jieqiSearchTicket" to ticketToken)
 }

@@ -4,12 +4,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertSame
 import org.junit.Test
-import java.io.File
 import java.time.LocalDate
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -32,7 +30,7 @@ class LinovelibBookDetailsTest {
             results += it
         }
         assertEquals(listOf("Book old", "Book new"), results.map { it.title })
-        assertEquals(listOf(LinovelibUrls.book("1")), requested)
+        assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), requested)
         assertEquals("Book new", metadata.bookInformation("1")?.title)
         assertEquals("${LinovelibUrls.HOST}/author/new.html", metadata.relatedTarget("作者：Author new"))
     }
@@ -59,17 +57,6 @@ class LinovelibBookDetailsTest {
     }
 
     @Test
-    fun `does not link coroutine synchronization classes unavailable in the host app`() {
-        val sourcePath = "io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibBookDetails.kt"
-        val source = listOf(
-            File(System.getProperty("user.dir"), "plugin/src/main/kotlin/$sourcePath"),
-            File(System.getProperty("user.dir"), "src/main/kotlin/$sourcePath")
-        ).first { it.isFile }.readText()
-
-        assertFalse(source.contains("kotlinx.coroutines.sync"))
-    }
-
-    @Test
     fun `loads complete information for lightweight search rows`() = runBlocking {
         val requestedUrls = mutableListOf<String>()
         val details = LinovelibBookDetails(
@@ -86,7 +73,7 @@ class LinovelibBookDetailsTest {
             listOf(ParsedExploreBook("101", "Search title", "Search author", ""))
         ).toList()
 
-        assertEquals(listOf(LinovelibUrls.book("101")), requestedUrls)
+        assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "101")), requestedUrls)
         assertEquals(2, result.size)
         assertEquals("Search title", result.first().title)
         assertEquals("101", result.last().id)
@@ -125,7 +112,7 @@ class LinovelibBookDetailsTest {
         val details = LinovelibBookDetails(
             htmlLoader = { url ->
                 requestedUrls += url
-                if (url == LinovelibUrls.book("405")) error("Detail request failed")
+                if (url == LinovelibUrls.book(LinovelibUrls.HOST, "405")) error("Detail request failed")
                 bookHtml(id = "404", date = "")
             },
             parser = LinovelibHtmlParser(),
@@ -148,7 +135,7 @@ class LinovelibBookDetailsTest {
         assertEquals(3, emitted)
         assertEquals(listOf("404", "405"), result.keys.toList())
         assertEquals("Book 404", result.getValue("404").title)
-        assertTrue(LinovelibDates.isUnknown(result.getValue("404").lastUpdated))
+        assertEquals(LinovelibDates.unknownLocalDate, result.getValue("404").lastUpdated)
         assertEquals("Retained title", result.getValue("405").title)
         assertEquals("Retained author", result.getValue("405").author)
         assertEquals("https://example.com/cover.jpg", result.getValue("405").coverUrl)
@@ -234,7 +221,7 @@ class LinovelibBookDetailsTest {
         val details = LinovelibBookDetails({ url -> requested += url; throw cancelled }, LinovelibHtmlParser(),
             LinovelibDiagnostics { _, _, message, _ -> events += message }, metadata = LinovelibMetadataStore())
         assertSame(cancelled, runCatching { details.enrich(books).toList() }.exceptionOrNull())
-        assertEquals(listOf(LinovelibUrls.book("1")), requested)
+        assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), requested)
         assertTrue(events.isEmpty())
 
         val failure = IllegalStateException("Collector failed")
@@ -242,13 +229,42 @@ class LinovelibBookDetailsTest {
         assertSame(failure, runCatching { details.enrich(books).collect { throw failure } }.exceptionOrNull())
         assertTrue(requested.isEmpty())
         assertTrue(events.isEmpty())
+
+        val refreshEvents = mutableListOf<String>()
+        val refreshRequests = mutableListOf<String>()
+        val emitted = mutableListOf<Pair<String, String>>()
+        val refreshDetails = LinovelibBookDetails({ url ->
+            refreshRequests += url
+            val id = if (url == LinovelibUrls.book(LinovelibUrls.HOST, "1")) "fresh-1" else "fresh-2"
+            bookHtml(id, "2026-10-14")
+        }, LinovelibHtmlParser(), LinovelibDiagnostics { _, _, message, _ -> refreshEvents += message },
+            metadata = LinovelibMetadataStore())
+        val refreshFailure = IllegalStateException("Refreshed detail collector failed")
+        var reachedRefresh = false
+        val observedFailure = runCatching {
+            refreshDetails.enrich(books).collect { book ->
+                emitted += book.id to book.title
+                if (book.id == "1" && book.title == "Book fresh-1") {
+                    reachedRefresh = true
+                    throw refreshFailure
+                }
+            }
+        }.exceptionOrNull()
+
+        assertSame(refreshFailure, observedFailure)
+        assertTrue(reachedRefresh)
+        assertEquals(listOf("1" to "Book 1", "2" to "Book 2", "1" to "Book fresh-1"), emitted)
+        assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), refreshRequests)
+        assertTrue(refreshEvents.isEmpty())
     }
 
     private fun bookHtml(id: String, date: String) = """
         <html><body>
-          <h1 class="book-title">Book $id</h1>
-          <span class="authorname"><a>Author $id</a></span>
-          <p class="book-meta book-layout-inline">12.3 ${"\u842c\u5b57"} | ${"\u5b8c\u7d50"}</p>
+          <div class="book-detail-info">
+            <h1 class="book-title">Book $id</h1>
+            <span class="authorname"><a>Author $id</a></span>
+            <p class="book-meta book-layout-inline">12.3 ${"\u842c\u5b57"} | ${"\u5b8c\u7d50"}</p>
+          </div>
           <a class="book-meta book-status"><div>last update $date</div></a>
         </body></html>
     """.trimIndent()

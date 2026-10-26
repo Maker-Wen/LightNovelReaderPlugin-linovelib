@@ -98,11 +98,11 @@ tasks.withType<Test>().configureEach {
     exclude("**/*HostTest*.class")
 }
 
-fun registerHostAbiCheck(variant: String) = tasks.register(
-    "verify${variant.replaceFirstChar(Char::uppercase)}HostAbi"
+fun registerHostClassAbiCheck(variant: String) = tasks.register(
+    "verify${variant.replaceFirstChar(Char::uppercase)}HostClassAbi"
 ) {
     val variantTitle = variant.replaceFirstChar(Char::uppercase)
-    dependsOn("package$variantTitle")
+    dependsOn("compile${variantTitle}Kotlin")
     doLast {
         val forbiddenMarkers = listOf(
             "kotlinx/coroutines/sync",
@@ -134,7 +134,15 @@ fun registerHostAbiCheck(variant: String) = tasks.register(
         check("io/nightfish/lightnovelreader/api/Route" !in webDataSourceBytecode) {
             "LinovelibWebDataSource directly links Route; route navigation must stay reflective for LightNovelReader 1.2.x"
         }
+    }
+}
 
+fun registerHostAbiCheck(variant: String) = tasks.register(
+    "verify${variant.replaceFirstChar(Char::uppercase)}HostAbi"
+) {
+    val variantTitle = variant.replaceFirstChar(Char::uppercase)
+    dependsOn("package$variantTitle", "verify${variantTitle}HostClassAbi")
+    doLast {
         val apk = fileTree(layout.buildDirectory.dir("outputs/apk/$variant")) {
             include("*.apk", "*.apk.lnrp")
         }.files.maxByOrNull(File::lastModified)
@@ -151,24 +159,24 @@ fun registerHostAbiCheck(variant: String) = tasks.register(
                 }
             }
         }
-        val dexChecks = mapOf(
-            "LinovelibImageStore" to listOf("java/util/Base64", "j\$/util/Base64", "withoutPadding")
-        )
-        dexChecks.forEach { (classMarker, forbiddenForClass) ->
-            val matchingDex = dexContents.filterValues { classMarker in it }
-            check(matchingDex.isNotEmpty()) { "$classMarker was not found in packaged DEX files" }
-            val badDex = matchingDex.filterValues { dex -> forbiddenForClass.any(dex::contains) }
-            check(badDex.isEmpty()) {
-                "$classMarker shares packaged DEX with unavailable host APIs: ${badDex.keys}"
-            }
+        val classMarker = "LinovelibImageStore"
+        val forbiddenForClass = listOf("java/util/Base64", "j\$/util/Base64", "withoutPadding")
+        val matchingDex = dexContents.filterValues { classMarker in it }
+        check(matchingDex.isNotEmpty()) { "$classMarker was not found in packaged DEX files" }
+        val badDex = matchingDex.filterValues { dex -> forbiddenForClass.any(dex::contains) }
+        check(badDex.isEmpty()) {
+            "$classMarker shares packaged DEX with unavailable host APIs: ${badDex.keys}"
         }
     }
 }
 
+val verifyDebugHostClassAbi = registerHostClassAbiCheck("debug")
+registerHostClassAbiCheck("release")
 val verifyDebugHostAbi = registerHostAbiCheck("debug")
 val verifyReleaseHostAbi = registerHostAbiCheck("release")
 tasks.configureEach {
     when (name) {
+        "testDebugUnitTest" -> dependsOn(verifyDebugHostClassAbi)
         "assembleDebug" -> dependsOn(verifyDebugHostAbi)
         "assembleRelease" -> dependsOn(verifyReleaseHostAbi)
     }

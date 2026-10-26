@@ -21,26 +21,25 @@ internal data class DownloadedLinovelibImage(
 internal class LinovelibImageStore(
     private val directory: File,
     private val downloader: (suspend (String) -> DownloadedLinovelibImage)? = null,
-    private val diagnostics: LinovelibDiagnostics,
-    private val referer: String = LinovelibUrls.HOST
+    private val diagnostics: LinovelibDiagnostics
 ) {
     suspend fun localize(blocks: List<ParsedContentBlock>): List<ParsedContentBlock> {
-        val imageUrls = blocks.filterIsInstance<ParsedContentBlock.Image>()
+        val protectedUrls = blocks.filterIsInstance<ParsedContentBlock.Image>()
             .map(ParsedContentBlock.Image::url)
             .filter(LinovelibImageRules::isProtectedRemoteUrl)
-            .distinct()
-        if (imageUrls.isEmpty()) return blocks
+            .toSet()
+        if (protectedUrls.isEmpty()) return blocks
         if (!directory.isDirectory && !directory.mkdirs() && !directory.isDirectory) {
             diagnostics.error(
                 "IMAGE_DIRECTORY_ERROR",
                 IOException("Unable to create image directory"),
                 mapOf("directory" to directory.absolutePath)
             )
-            return blocks.filterNot { it is ParsedContentBlock.Image && LinovelibImageRules.isProtectedRemoteUrl(it.url) }
+            return blocks.filterNot { it is ParsedContentBlock.Image && it.url in protectedUrls }
         }
 
         val localUrls = mutableMapOf<String, String>()
-        imageUrls.chunked(MAX_CONCURRENT_DOWNLOADS).forEach { chunk ->
+        protectedUrls.chunked(MAX_CONCURRENT_DOWNLOADS).forEach { chunk ->
             val results = coroutineScope {
                 chunk.map { url ->
                     async(Dispatchers.IO) { url to runCatching { localUri(url) } }
@@ -58,7 +57,7 @@ internal class LinovelibImageStore(
         return blocks.mapNotNull { block ->
             if (block is ParsedContentBlock.Image) {
                 localUrls[block.url]?.let { ParsedContentBlock.Image(it) }
-                    ?: block.takeUnless { LinovelibImageRules.isProtectedRemoteUrl(it.url) }
+                    ?: block.takeUnless { it.url in protectedUrls }
             } else {
                 block
             }
@@ -68,13 +67,12 @@ internal class LinovelibImageStore(
     private suspend fun localUri(url: String): String {
         val target = directory.resolve(cacheKey(url))
         if (isValidStoredFile(target)) return target.toURI().toString()
-        if (target.exists()) target.delete()
+        target.delete()
 
-        val image = downloader?.invoke(url) ?: downloadImage(url, referer)
+        val image = downloader?.invoke(url) ?: downloadImage(url)
         require(LinovelibImageValidation.isValid(image.bytes, image.mimeType)) {
             "Image response did not contain a supported image"
         }
-        require(image.bytes.size <= MAX_IMAGE_BYTES) { "Image response was too large" }
 
         val temporary = File.createTempFile("download-", ".tmp", directory)
         try {
@@ -115,30 +113,30 @@ internal class LinovelibImageStore(
         private class ImageHttpException(val statusCode: Int) :
             IOException("Image server returned HTTP $statusCode")
 
-        internal suspend fun downloadImage(url: String, referer: String): DownloadedLinovelibImage {
-            var lastFailure: IOException? = null
-            repeat(MAX_ATTEMPTS) { attempt ->
+        internal suspend fun downloadImage(url: String): DownloadedLinovelibImage {
+            var attempt = 0
+            while (true) {
                 try {
-                    return withContext(Dispatchers.IO) { executeDownload(url, referer) }
+                    return withContext(Dispatchers.IO) { executeDownload(url) }
                 } catch (throwable: IOException) {
                     if (throwable is ImageHttpException &&
                         LinovelibRequestPolicy.retryDelayMillis(throwable.statusCode, null, attempt) == null
                     ) throw throwable
-                    lastFailure = throwable
-                    if (attempt < MAX_ATTEMPTS - 1) delay(500L * (attempt + 1))
+                    if (attempt == MAX_ATTEMPTS - 1) throw throwable
+                    delay(500L)
+                    attempt++
                 }
             }
-            throw lastFailure ?: IOException("Image download failed")
         }
 
-        private fun executeDownload(url: String, referer: String): DownloadedLinovelibImage {
+        private fun executeDownload(url: String): DownloadedLinovelibImage {
             val connection = URL(url).openConnection() as HttpURLConnection
             try {
                 connection.instanceFollowRedirects = true
                 connection.connectTimeout = 10_000
                 connection.readTimeout = 15_000
                 connection.setRequestProperty("User-Agent", USER_AGENT)
-                connection.setRequestProperty("Referer", "${referer.trimEnd('/')}/")
+                connection.setRequestProperty("Referer", "${LinovelibUrls.HOST}/")
                 connection.setRequestProperty("Accept", "image/avif,image/webp,image/apng,image/*,*/*;q=0.8")
                 val status = connection.responseCode
                 if (status !in 200..299) throw ImageHttpException(status)
@@ -167,7 +165,7 @@ internal class LinovelibImageStore(
 
 internal object LinovelibImageValidation {
     fun isValid(bytes: ByteArray, mimeType: String): Boolean =
-        mimeType.substringBefore(';').trim().startsWith("image/", ignoreCase = true) &&
+        mimeType.trim().startsWith("image/", ignoreCase = true) &&
             hasSupportedSignature(bytes)
 
     fun hasSupportedSignature(bytes: ByteArray): Boolean =

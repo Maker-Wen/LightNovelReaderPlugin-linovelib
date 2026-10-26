@@ -31,7 +31,7 @@ internal val LINOVELIB_SOURCE_ID = "linovelib".hashCode()
 
 @Suppress("unused")
 class LinovelibWebDataSource internal constructor(
-    private val context: Context,
+    context: Context,
     private val metadata: LinovelibMetadataStore,
     private val diagnostics: LinovelibDiagnostics,
     detailHtmlLoader: (suspend (String) -> String)?
@@ -45,7 +45,7 @@ class LinovelibWebDataSource internal constructor(
     private val details = LinovelibBookDetails(
         detailHtmlLoader ?: httpClient::loadHtml, parser, diagnostics, metadata = metadata
     )
-    private var offlineMonitorJob: Job? = null
+    private var offlineProbeJob: Job? = null
     override val permits: Int = 1
     override val cache: Cache = Cache(
         maxCountEachType = LinovelibDataSourceConfiguration.cacheEntriesPerType,
@@ -53,17 +53,15 @@ class LinovelibWebDataSource internal constructor(
     )
     override val id: Int = LINOVELIB_SOURCE_ID
     override val offLine: Boolean get() = httpClient.isOffLineFlow.value
-    override val isOffLineFlow: StateFlow<Boolean> = httpClient.isOffLineFlow
+    override val isOffLineFlow: StateFlow<Boolean> get() = httpClient.isOffLineFlow
     private val linovelibSearchProvider = LinovelibSearchProvider(
-        httpClient::loadHtml,
-        { keyword -> httpClient.search(keyword).let { LinovelibSearchResponse(it.finalUrl, it.html) } },
+        httpClient::search,
         parser,
         diagnostics,
-        LinovelibUrls.HOST,
         metadata,
         details
     )
-    override val searchProvider: SearchProvider = linovelibSearchProvider
+    override val searchProvider: SearchProvider get() = linovelibSearchProvider
     private val linovelibExplorePageProvider = LinovelibExplorePageProvider(
         httpClient::loadHtml,
         parser,
@@ -71,11 +69,10 @@ class LinovelibWebDataSource internal constructor(
         LinovelibUrls.HOST,
         metadata
     )
-    override val explorePageProvider: ExplorePageProvider = linovelibExplorePageProvider
+    override val explorePageProvider: ExplorePageProvider get() = linovelibExplorePageProvider
     private val imageStore = LinovelibImageStore(
         directory = File(context.filesDir, "linovelib/chapter-images"),
-        diagnostics = diagnostics,
-        referer = LinovelibUrls.HOST
+        diagnostics = diagnostics
     )
     override val imageHeader: Map<String, String> = mapOf(
         "User-Agent" to LINOVELIB_CONTENT_USER_AGENT,
@@ -85,8 +82,8 @@ class LinovelibWebDataSource internal constructor(
 
     @Synchronized
     override fun onLoad() {
-        if (!LinovelibDataSourceConfiguration.shouldStartOfflineMonitor(offlineMonitorJob?.isActive == true)) return
-        offlineMonitorJob = scope.launch {
+        if (offlineProbeJob?.isActive == true) return
+        offlineProbeJob = scope.launch {
             httpClient.checkOffline()
         }
     }
@@ -95,7 +92,7 @@ class LinovelibWebDataSource internal constructor(
 
     override suspend fun getBookInformation(id: String): BookInformation = withContext(Dispatchers.IO) {
         runCatching {
-            details.fetch(id)?.toBookInformation()
+            details.fetch(id)?.toMutableBookInformation()
                 ?.takeUnless(BookInformation::isEmpty)
                 ?: fallbackBookInformation(id)
         }.getOrElse { error ->
@@ -155,7 +152,7 @@ class LinovelibWebDataSource internal constructor(
     }
 
     private fun fallbackBookInformation(id: String): BookInformation =
-        metadata.fallbackBookInformation(id)?.toBookInformation() ?: BookInformation.empty(id)
+        metadata.fallbackBookInformation(id)?.toMutableBookInformation() ?: BookInformation.empty(id)
 
     private suspend fun ParsedChapterContent.toChapterContent(): ChapterContent {
         val localizedBlocks = imageStore.localize(LinovelibContentFormatter.format(blocks))
@@ -191,7 +188,7 @@ internal suspend fun getChapterContentPages(
     val websiteChapterId = LinovelibChapterIds.forWebsite(chapterId)
     val pages = mutableListOf<ParsedChapterContent>()
     val visitedUrls = mutableSetOf<String>()
-    var nextUrl = LinovelibUrls.fullChapter(host, bookId, websiteChapterId)
+    var nextUrl = LinovelibUrls.chapter(host, bookId, websiteChapterId)
     var pageCount = 0
     diagnostics.info(
         "CHAPTER_START",
@@ -204,10 +201,6 @@ internal suspend fun getChapterContentPages(
     )
 
     while (true) {
-        if (nextUrl.isBlank()) {
-            diagnostics.info("CHAPTER_STOP", mapOf("reason" to "blank-url", "pages" to pageCount))
-            break
-        }
         if (pageCount >= MAX_CHAPTER_PAGES) {
             diagnostics.info("CHAPTER_STOP", mapOf("reason" to "page-limit", "pages" to pageCount))
             break
@@ -222,17 +215,23 @@ internal suspend fun getChapterContentPages(
         pageCount++
         val response = loadPage(nextUrl)
         val finalUrl = response.finalUrl
+        if (finalUrl != nextUrl && !visitedUrls.add(finalUrl)) {
+            diagnostics.info(
+                "CHAPTER_STOP",
+                mapOf("reason" to "repeated-url", "pages" to pageCount, "url" to finalUrl)
+            )
+            break
+        }
         val page = parser.parseChapterContent(
             chapterId = websiteChapterId,
             html = response.html,
-            baseUrl = finalUrl,
-            restoreParagraphOrder = true
+            baseUrl = finalUrl
         )
         pages.add(page)
         val candidate = page.nextPageUrl.takeIf(String::isNotBlank)
             ?.let { URI(finalUrl).resolve(it).toString() }.orEmpty()
         val candidateChapterId = parser.chapterIdFromHref(candidate)
-        val isSameChapterPage = candidate.isNotBlank() && candidateChapterId == websiteChapterId
+        val isSameChapterPage = candidateChapterId == websiteChapterId
         val textBlocks = page.blocks.filterIsInstance<ParsedContentBlock.Text>()
         diagnostics.info(
             "CHAPTER_PAGE",
@@ -263,14 +262,7 @@ internal suspend fun getChapterContentPages(
         nextUrl = candidate
     }
 
-    val first = pages.firstOrNull() ?: return ParsedChapterContent(
-        id = chapterId,
-        title = "",
-        previousChapterId = "",
-        nextChapterId = "",
-        nextPageUrl = "",
-        blocks = emptyList()
-    )
+    val first = pages.first()
     val last = pages.last()
     diagnostics.info(
         "CHAPTER_DONE",

@@ -9,7 +9,7 @@ import java.util.zip.ZipFile
 
 /** Reads the official API 3 LocalData format without adding a conversion or CBOR dependency. */
 internal class MigrationSnapshotCodec {
-    data class Input(val snapshot: MigrationSnapshot, val file: File, val digest: String)
+    data class Input(val snapshot: MigrationSnapshot)
 
     fun readTwSource(standard: File, alias: File): Input? {
         val primary = if (standard.isFile) readable { read(standard, MigrationData.TW_SOURCE_ID) } else null
@@ -22,12 +22,7 @@ internal class MigrationSnapshotCodec {
     /** A legacy -1 file is a TW candidate only when its persisted owner is TW. */
     fun readTwAlias(file: File): Input? = resolveTwAlias(readSnapshot(file, -1))
 
-    fun read(file: File, expectedSourceId: Int): Input {
-        val input = readSnapshot(file, expectedSourceId)
-        return if (expectedSourceId == -1) requireNotNull(resolveTwAlias(input)) {
-            "无法确认 -1 快照属于 TW"
-        } else input
-    }
+    fun read(file: File, expectedSourceId: Int): Input = readSnapshot(file, expectedSourceId)
 
     private fun resolveTwAlias(input: Input): Input? {
         val data = input.snapshot.data
@@ -52,8 +47,8 @@ internal class MigrationSnapshotCodec {
             if (count == 4 && prefix.contentEquals(byteArrayOf(80, 75, 3, 4))) {
                 ZipFile(file).use { zip ->
                     val entries = zip.entries().asSequence().filter { it.name == "data" }.toList()
-                    require(entries.size == 1 && !entries.single().isDirectory) { "源快照 ZIP 缺少唯一 data 条目" }
-                    val entry = entries.single()
+                    require(entries.size == 1 && !entries.first().isDirectory) { "源快照 ZIP 缺少唯一 data 条目" }
+                    val entry = entries.first()
                     require(entry.size <= MAX_BYTES) { "源快照解包后过大" }
                     zip.getInputStream(entry).use(::readBounded)
                 }
@@ -68,10 +63,10 @@ internal class MigrationSnapshotCodec {
         if (expectedSourceId == MigrationData.TW_SOURCE_ID) {
             val owners = data.getValue("userDataEntities").jsonArray.map { it.jsonObject }
                 .filter { it["path"] == JsonPrimitive(SOURCE_PATH) }
-            if (owners.isNotEmpty()) require(owners.size == 1 && owners.single()["type"] == JsonPrimitive("Int") &&
-                owners.single()["value"] == JsonPrimitive(MigrationData.TW_SOURCE_ID.toString())) { "TW 快照归属不明确" }
+            if (owners.isNotEmpty()) require(owners.size == 1 && owners.first()["type"] == JsonPrimitive("Int") &&
+                owners.first()["value"] == JsonPrimitive(MigrationData.TW_SOURCE_ID.toString())) { "TW 快照归属不明确" }
         }
-        return Input(MigrationSnapshot(expectedSourceId, data), file, digestBefore)
+        return Input(MigrationSnapshot(expectedSourceId, data))
     }
 
     companion object {
@@ -92,7 +87,7 @@ internal class MigrationSnapshotCodec {
         }
 
         fun decode(bytes: ByteArray): JsonObject {
-            require(bytes.isNotEmpty() && bytes.size <= MAX_BYTES) { "无效快照大小" }
+            require(bytes.size <= MAX_BYTES) { "无效快照大小" }
             val decoder = Decoder(bytes)
             val data = decoder.decode().jsonObject
             val id = data["webBookDataSourceId"] as? JsonPrimitive
@@ -177,7 +172,7 @@ internal class MigrationSnapshotCodec {
                 0 -> { require(size >= 0); JsonPrimitive(size) }
                 1 -> { require(size >= 0); JsonPrimitive(-1L - size) }
                 3 -> {
-                    require(size in 0..MAX_BYTES.toLong() && size <= bytes.size - offset)
+                    require(size >= 0 && size <= bytes.size - offset)
                     val count = size.toInt()
                     val decoder = Charsets.UTF_8.newDecoder()
                     val text = decoder.decode(ByteBuffer.wrap(bytes, offset, count)).toString()
@@ -185,14 +180,14 @@ internal class MigrationSnapshotCodec {
                     JsonPrimitive(text)
                 }
                 4 -> {
-                    require(size in -1..2_000_000)
+                    require(size <= 2_000_000)
                     val list = mutableListOf<JsonElement>()
                     if (size == -1L) while (!breakMarker()) list += value(depth + 1)
                     else repeat(size.toInt()) { list += value(depth + 1) }
                     JsonArray(list)
                 }
                 5 -> {
-                    require(size in -1..2_000_000)
+                    require(size <= 2_000_000)
                     val map = linkedMapOf<String, JsonElement>()
                     fun pair() {
                         val key = value(depth + 1)

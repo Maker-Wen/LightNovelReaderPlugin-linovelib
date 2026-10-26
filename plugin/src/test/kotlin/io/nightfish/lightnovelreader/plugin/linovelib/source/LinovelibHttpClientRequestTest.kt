@@ -10,8 +10,64 @@ import java.io.IOException
 import java.net.URLDecoder
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 class LinovelibHttpClientRequestTest {
+    @Test
+    fun successfulResponsesIgnoreRetryAfterWithoutDelayingTheNextRequest() = runBlocking {
+        for (status in listOf(200, 302)) {
+            LinovelibHttpTestSite { exchange ->
+                exchange.responseHeaders.add("Retry-After", "60")
+                exchange.respond(status, "Page")
+            }.use { site ->
+                val client = LinovelibHttpClient(
+                    host = site.host, diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
+                    requestCoordinator = LinovelibRequestCoordinator(0) { 1_000_000L }
+                )
+                withTimeout(3_000) {
+                    assertEquals("Page", client.loadHtml("${site.host}/first"))
+                    assertEquals("Page", client.loadHtml("${site.host}/next"))
+                }
+                assertEquals(listOf("/first", "/next"), site.requests.map { it.path })
+                assertFalse(client.isOffLineFlow.value)
+            }
+        }
+    }
+
+    @Test
+    fun `the final rate limit still delays the next resource without adding retries`() = runBlocking {
+        val attempts = AtomicInteger()
+        val finalRateLimitAt = AtomicLong()
+        val nextRequestAt = AtomicLong()
+        LinovelibHttpTestSite { exchange ->
+            if (exchange.requestURI.path == "/limited") {
+                val attempt = attempts.incrementAndGet()
+                if (attempt == 4) finalRateLimitAt.set(System.nanoTime())
+                exchange.responseHeaders.add("Retry-After", if (attempt == 4) "1" else "0")
+                exchange.respond(429)
+            } else {
+                nextRequestAt.set(System.nanoTime())
+                exchange.respond(200, "Next resource")
+            }
+        }.use { site ->
+            val client = LinovelibHttpClient(
+                host = site.host, diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
+                requestCoordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
+            )
+            withTimeout(5_000) {
+                val failure = runCatching { client.loadHtml("${site.host}/limited") }.exceptionOrNull()
+                assertTrue(failure is LinovelibHttpStatusException)
+                assertEquals("HTTP 429 for ${site.host}/limited", failure?.message)
+                assertEquals(4, attempts.get())
+                assertEquals("Next resource", client.loadHtml("${site.host}/next"))
+            }
+            val elapsedMillis = (nextRequestAt.get() - finalRateLimitAt.get()) / 1_000_000L
+            assertTrue("Next resource started after only $elapsedMillis ms", elapsedMillis >= 950L)
+            assertEquals(listOf("/limited", "/limited", "/limited", "/limited", "/next"), site.requests.map { it.path })
+            assertFalse(client.isOffLineFlow.value)
+        }
+    }
+
     @Test
     fun `ordinary and chapter requests preserve their headers and merge response cookies`() = runBlocking {
         LinovelibHttpTestSite { exchange ->
@@ -118,8 +174,7 @@ class LinovelibHttpClientRequestTest {
                 val client = site.client(LinovelibDiagnostics { _, _, message, _ -> events += message })
                 val failure = runCatching { client.loadHtml("${site.host}/resource") }.exceptionOrNull()
                 assertTrue(failure is LinovelibHttpStatusException)
-                assertEquals(status, (failure as LinovelibHttpStatusException).statusCode)
-                assertEquals("${site.host}/resource", failure.url)
+                assertEquals("HTTP $status for ${site.host}/resource", failure?.message)
                 assertEquals(attempts, site.requests.size)
                 val retries = events.filter { it.startsWith("HTTP_RETRY") }
                 assertEquals(attempts - 1, retries.size)
@@ -215,7 +270,6 @@ class LinovelibHttpClientRequestTest {
             LinovelibHttpTestSite { exchange ->
                 val stage = stages.incrementAndGet()
                 if (stage < missingStage && stage == 2) exchange.responseHeaders.add("Set-Cookie", "jieqiSearchCss=css; Path=/")
-                if (stage < missingStage && stage == 3) exchange.responseHeaders.add("Set-Cookie", "jieqiSearchTicket=ticket; Path=/")
                 exchange.respond(200, if (stage == 1 && stage < missingStage) "jieqiSearchJs=js" else "Missing guard")
             }.use { site ->
                 val client = site.client()

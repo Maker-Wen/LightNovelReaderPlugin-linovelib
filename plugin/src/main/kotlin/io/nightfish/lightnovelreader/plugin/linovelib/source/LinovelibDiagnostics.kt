@@ -3,30 +3,22 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 import android.util.Log
 import kotlin.coroutines.cancellation.CancellationException
 
-data class HtmlInspection(
-    val characters: Int,
-    val hasLoadFailure: Boolean
-)
-
-class LinovelibDiagnostics(
+internal class LinovelibDiagnostics(
     private val sink: (Int, String, String, Throwable?) -> Unit = ::writeAndroidLog
 ) {
-    fun info(event: String, fields: Map<String, Any?> = emptyMap()) {
+    fun info(event: String, fields: Map<String, Any?>) {
         sink(Log.INFO, TAG, format(event, fields), null)
     }
 
     fun error(
         event: String,
         throwable: Throwable,
-        fields: Map<String, Any?> = emptyMap()
+        fields: Map<String, Any?>
     ) {
         sink(Log.ERROR, TAG, format(event, fields), throwable)
     }
 
-    fun inspectHtml(html: String): HtmlInspection = HtmlInspection(
-        characters = html.length,
-        hasLoadFailure = LOAD_FAILURE_MARKERS.any(html::contains)
-    )
+    fun hasLoadFailure(html: String): Boolean = LOAD_FAILURE_MARKERS.any(html::contains)
 
     fun isSuccessfulHttpStatus(status: Int): Boolean = status in 200..399
 

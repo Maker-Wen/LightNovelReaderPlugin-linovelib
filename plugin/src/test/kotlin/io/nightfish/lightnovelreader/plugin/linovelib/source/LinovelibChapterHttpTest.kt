@@ -49,6 +49,42 @@ class LinovelibChapterHttpTest {
     }
 
     @Test
+    fun `a chapter page linking to its final redirect URL is loaded only once`() = runBlocking {
+        LinovelibHttpTestSite { exchange ->
+            when (exchange.requestURI.path) {
+                "/novel/100/101.html" -> {
+                    exchange.responseHeaders.add("Location", "/mirror/novel/100/101.html")
+                    exchange.respond(302)
+                }
+                "/mirror/novel/100/101.html" -> exchange.respond(200, page("Only page", "101.html"))
+                else -> exchange.respond(404)
+            }
+        }.use { site ->
+            val chapter = loadChapter(site)
+            assertEquals(listOf(ParsedContentBlock.Text("Only page")), chapter.blocks)
+            assertEquals(listOf("/novel/100/101.html", "/mirror/novel/100/101.html"), site.requests.map { it.path })
+        }
+    }
+
+    @Test
+    fun `a later page redirecting to an earlier page does not duplicate content`() = runBlocking {
+        LinovelibHttpTestSite { exchange ->
+            when (exchange.requestURI.path) {
+                "/novel/100/101.html" -> exchange.respond(200, page("Only page", "101_2.html"))
+                "/novel/100/101_2.html" -> {
+                    exchange.responseHeaders.add("Location", "/novel/100/101.html")
+                    exchange.respond(302)
+                }
+                else -> exchange.respond(404)
+            }
+        }.use { site ->
+            val chapter = loadChapter(site)
+            assertEquals(listOf(ParsedContentBlock.Text("Only page")), chapter.blocks)
+            assertEquals(listOf("/novel/100/101.html", "/novel/100/101_2.html", "/novel/100/101.html"), site.requests.map { it.path })
+        }
+    }
+
+    @Test
     fun `chapter pagination keeps its existing page limit`() = runBlocking {
         LinovelibHttpTestSite { exchange ->
             val index = Regex("101_(\\d+)\\.html").find(exchange.requestURI.path)?.groupValues?.get(1)?.toInt() ?: 1
@@ -71,9 +107,57 @@ class LinovelibChapterHttpTest {
             val client = site.client()
             val failure = runCatching { loadChapter(site, client) }.exceptionOrNull()
             assertTrue(failure is LinovelibHttpStatusException)
-            assertEquals(404, (failure as LinovelibHttpStatusException).statusCode)
+            assertEquals("HTTP 404 for ${site.host}/novel/100/101_2.html", failure?.message)
             assertEquals(2, site.requests.size)
             assertFalse(client.isOffLineFlow.value)
+        }
+    }
+
+    @Test
+    fun `an unrecognized first chapter page fails without marking offline`() = runBlocking {
+        LinovelibHttpTestSite { exchange ->
+            exchange.respond(200, "<html><body>Please verify your browser</body></html>")
+        }.use { site ->
+            val client = site.client()
+            val failure = runCatching { loadChapter(site, client) }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertEquals(1, site.requests.size)
+            assertFalse(client.isOffLineFlow.value)
+        }
+    }
+
+    @Test
+    fun `an unrecognized later chapter page fails instead of returning partial content`() = runBlocking {
+        LinovelibHttpTestSite { exchange ->
+            if (exchange.requestURI.path.endsWith("101.html")) exchange.respond(200, page("First page", "101_2.html"))
+            else exchange.respond(200, "<html><body>Please verify your browser</body></html>")
+        }.use { site ->
+            val client = site.client()
+            val failure = runCatching { loadChapter(site, client) }.exceptionOrNull()
+            assertTrue(failure is IllegalArgumentException)
+            assertEquals(2, site.requests.size)
+            assertFalse(client.isOffLineFlow.value)
+        }
+    }
+
+    @Test
+    fun `recognized empty and image only pages remain valid chapter content`() = runBlocking {
+        LinovelibHttpTestSite { exchange ->
+            if (exchange.requestURI.path.endsWith("101.html")) {
+                exchange.respond(200, """
+                    <div id="acontent"></div><script>var ReadParams={url_next:"101_2.html"};</script>
+                """)
+            } else {
+                exchange.respond(200, """
+                    <div id="acontent"><img src="/files/illustration.jpg"></div>
+                    <script>var ReadParams={url_next:"/novel/100/102.html"};</script>
+                """)
+            }
+        }.use { site ->
+            val chapter = loadChapter(site)
+            assertEquals(listOf(ParsedContentBlock.Image("${site.host}/files/illustration.jpg")), chapter.blocks)
+            assertEquals(LinovelibChapterIds.forApp("102"), chapter.nextChapterId)
+            assertEquals(2, site.requests.size)
         }
     }
 

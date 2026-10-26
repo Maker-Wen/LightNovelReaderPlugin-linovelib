@@ -1,12 +1,12 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import android.net.Uri
-import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.BookVolumes
 import io.nightfish.lightnovelreader.api.book.ChapterInformation
 import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.book.WordCount
+import java.time.LocalDateTime
 
 internal fun ParsedExploreBook.toParsedBookInformation() = ParsedBookInformation(
     id = id,
@@ -22,21 +22,18 @@ internal fun ParsedExploreBook.toParsedBookInformation() = ParsedBookInformation
     isComplete = false
 )
 
-internal fun ParsedBookInformation.toBookInformation(): BookInformation =
-    if (title.isBlank()) BookInformation.empty(id) else toMutableBookInformation()
-
 internal fun ParsedBookInformation.toMutableBookInformation(): MutableBookInformation =
     MutableBookInformation(
         id = id,
         title = title,
         subtitle = subtitle,
-        coverUrl = coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY,
+        coverUrl = Uri.parse(coverUrl),
         author = author,
         description = description,
         tags = LinovelibRelatedSearch.displayTags(author, tags),
         publishingHouse = publishingHouse,
         wordCount = WordCount(wordCount),
-        lastUpdated = if (LinovelibDates.isUnknown(lastUpdated)) LinovelibDates.unknownDateTime() else lastUpdated.atStartOfDay(),
+        lastUpdated = if (lastUpdated == LinovelibDates.unknownLocalDate) LocalDateTime.MIN else lastUpdated.atStartOfDay(),
         isComplete = isComplete
     )
 

@@ -61,7 +61,6 @@ class LinovelibExplorePageProviderTest {
         assertFalse(before.containsKey(relatedId))
         assertTrue(after.containsKey(relatedId))
         assertEquals(relatedId, provider.registerRelatedPage("  未知标签  "))
-        assertSame(after.getValue(relatedId), after.getValue(relatedId))
         assertNotSame(after.getValue(relatedId), provider.exploreExpandedPageDataSourceMap.getValue(relatedId))
 
         after.clear()
@@ -253,6 +252,7 @@ class LinovelibExplorePageProviderTest {
     private fun provider(htmlLoader: suspend (String) -> String) = LinovelibExplorePageProvider(
         htmlLoader = htmlLoader,
         parser = LinovelibHtmlParser(),
-        searchBookIds = { flowOf(SearchResult.End()) }
+        searchBookIds = { flowOf(SearchResult.End()) },
+        metadata = LinovelibMetadataStore()
     )
 }

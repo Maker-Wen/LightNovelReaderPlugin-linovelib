@@ -1,5 +1,6 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
+import io.nightfish.lightnovelreader.api.book.BookInformation
 import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.flowOf
@@ -41,8 +42,12 @@ class LinovelibMetadataFlowHostTest {
                 .getRowsFlow().toList()
             assertTrue(emissions.first().isEmpty())
             assertEquals((1..12).map(Int::toString), emissions.last().single().bookList.map { it.id })
+            assertEquals(
+                (1..12).map { LinovelibUrls.cover(LinovelibUrls.HOST, "$it") },
+                emissions.last().single().bookList.map { it.coverUri.toString() }
+            )
             (1..12).forEach { id ->
-                val fallback = metadata.fallbackBookInformation("$id")!!.toBookInformation()
+                val fallback: BookInformation = metadata.fallbackBookInformation("$id")!!.toMutableBookInformation()
                 assertEquals("Book $id", fallback.title)
                 assertEquals(listOf("作者：Writer"), fallback.tags)
                 assertEquals(LinovelibUrls.cover(LinovelibUrls.HOST, "$id"), fallback.coverUri.toString())
@@ -154,8 +159,8 @@ class LinovelibMetadataFlowHostTest {
         listOf(false, true).forEach { redirected ->
             val metadata = LinovelibMetadataStore()
             var html = detail("Known")
-            val provider = LinovelibSearchProvider(
-                { html }, { LinovelibSearchResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
+            val provider = testSearchProvider(
+                { html }, { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
                 LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata
             )
             val query = if (redirected) "query" else "1"
@@ -176,9 +181,9 @@ class LinovelibMetadataFlowHostTest {
         assertNull(metadata.bookInformation("1"))
         assertTrue(provider.searchBookIds("2").toList().first() is SearchResult.SingleBook)
         assertNull(metadata.fallbackBookInformation("2"))
-        val redirect = LinovelibSearchProvider(
+        val redirect = testSearchProvider(
             { error("Redirect already contains its result") },
-            { LinovelibSearchResponse("${LinovelibUrls.HOST}/novel/3.html", detail("Redirect")) },
+            { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/3.html", detail("Redirect")) },
             LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata
         )
         assertTrue(redirect.searchBookIds("query").toList().first() is SearchResult.SingleBook)
@@ -204,7 +209,7 @@ class LinovelibMetadataFlowHostTest {
     }
 
     private fun searchProvider(metadata: LinovelibMetadataStore, rows: String, load: suspend (String) -> String) =
-        LinovelibSearchProvider(load, { LinovelibSearchResponse("${LinovelibUrls.HOST}/search.html", rows) },
+        testSearchProvider(load, { LinovelibHtmlResponse("${LinovelibUrls.HOST}/search.html", rows) },
             LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata)
 
     private fun row(id: Int) = """<a class="book-layout" href="/novel/$id.html"><span class="book-title">Book $id</span><span class="book-author"><svg class="icon icon-human"><title>作者</title><use xlink:href="#icon-human"></use></svg>Writer</span></a>"""

@@ -10,12 +10,12 @@ import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 
-class LinovelibExplorePageProvider internal constructor(
+internal class LinovelibExplorePageProvider(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     private val searchBookIds: (String) -> Flow<SearchResult>,
     private val host: String = LinovelibUrls.HOST,
-    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
+    private val metadata: LinovelibMetadataStore
 ) : AbstractDefaultExplorePageProvider() {
     private data class ExpandedPageDefinition(val title: String, val targetUrl: String?)
 
@@ -57,14 +57,26 @@ class LinovelibExplorePageProvider internal constructor(
 
     private fun displayRow(row: ParsedExploreRow, fixedExpandedPageId: String? = null): ExploreBooksRow {
         // The same projection supplies metadata and host rows; hidden books never refresh the store.
-        val displayedRow = row.copy(books = row.books.take(MAX_BOOKS_PER_ROW))
-        metadata.rememberBooks(displayedRow.books)
-        val pageId = fixedExpandedPageId ?: displayedRow.expandedUrl?.let { url ->
+        val displayedBooks = row.books.take(MAX_BOOKS_PER_ROW)
+        metadata.rememberBooks(displayedBooks)
+        val pageId = fixedExpandedPageId ?: row.expandedUrl?.let { url ->
             "linovelib-list-${url.removePrefix(host)}".also { id ->
-                registerExpandedPageDefinition(id, ExpandedPageDefinition(displayedRow.title, url))
+                registerExpandedPageDefinition(id, ExpandedPageDefinition(row.title, url))
             }
         }
-        return displayedRow.toExploreBooksRow(pageId)
+        return ExploreBooksRow(
+            title = row.title,
+            expandable = pageId != null,
+            expandedPageDataSourceId = pageId,
+            bookList = displayedBooks.map { book ->
+                ExploreDisplayBook(
+                    id = book.id,
+                    title = book.title,
+                    author = book.author,
+                    coverUri = Uri.parse(book.coverUrl)
+                )
+            }
+        )
     }
 
     private fun registerExpandedPageDefinition(id: String, definition: ExpandedPageDefinition) {
@@ -131,18 +143,3 @@ private class LinovelibRowsExploreTapPage(
         emit(rowsLoader())
     }
 }
-
-private fun ParsedExploreRow.toExploreBooksRow(expandedPageId: String? = null): ExploreBooksRow =
-    ExploreBooksRow(
-        title = title,
-        expandable = expandedPageId != null,
-        expandedPageDataSourceId = expandedPageId,
-        bookList = books.map { book ->
-            ExploreDisplayBook(
-                id = book.id,
-                title = book.title,
-                author = book.author,
-                coverUri = book.coverUrl.takeIf(String::isNotEmpty)?.let(Uri::parse) ?: Uri.EMPTY
-            )
-        }
-    )

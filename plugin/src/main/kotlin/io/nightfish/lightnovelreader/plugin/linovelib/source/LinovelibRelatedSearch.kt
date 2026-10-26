@@ -16,20 +16,20 @@ internal object LinovelibRelatedSearch {
 
     fun displayTags(author: String, tags: List<String>): List<String> = buildList {
         if (author.isNotBlank()) add(authorDisplayTag(author))
-        addAll(tags.filter(String::isNotBlank))
+        addAll(tags)
     }.distinct()
 
-    fun keyword(displayTag: String): String = displayTag.removePrefix(AUTHOR_PREFIX).trim()
+    fun keyword(displayTag: String): String = displayTag.removePrefix(AUTHOR_PREFIX)
 }
 
 internal class LinovelibLinkedExpandedPageDataSource(
-    private val displayTag: String,
+    displayTag: String,
     private val targetUrl: String,
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
     override val filters: List<Filter<*>> = emptyList(),
     private val filteredUrl: (() -> String)? = null,
-    private val metadata: LinovelibMetadataStore = LinovelibMetadataStore()
+    private val metadata: LinovelibMetadataStore
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
     private val sessionLock = Any()
@@ -96,14 +96,14 @@ internal class LinovelibLinkedExpandedPageDataSource(
 
 internal class LinovelibRelatedExpandedPageDataSource(
     private val searchBookIds: (String) -> Flow<SearchResult>,
-    private val displayTag: String
+    displayTag: String
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
     override val filters: List<Filter<*>> = emptyList()
 
     override fun loadMore() = Unit
 
-    override fun getResultFlow(): Flow<SearchResult> = searchBookIds(LinovelibRelatedSearch.keyword(displayTag))
+    override fun getResultFlow(): Flow<SearchResult> = searchBookIds(LinovelibRelatedSearch.keyword(title))
 }
 
 internal object LinovelibRelatedNavigation {

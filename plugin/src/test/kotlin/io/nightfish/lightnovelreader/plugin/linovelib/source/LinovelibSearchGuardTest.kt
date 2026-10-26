@@ -12,7 +12,7 @@ class LinovelibSearchGuardTest {
 
         assertEquals(
             "495454.example-token",
-            LinovelibSearchGuard.extractCookieValue(javascript, "jieqiSearchJs")
+            LinovelibSearchGuard.extractJsToken(javascript)
         )
     }
 
@@ -25,10 +25,6 @@ class LinovelibSearchGuardTest {
                 "jieqiSearchCss" to "css-token"
             ),
             LinovelibSearchGuard.guardCookies("js-token", "css-token")
-        )
-        assertEquals(
-            mapOf("jieqiSearchTicket" to "ticket-token"),
-            LinovelibSearchGuard.ticketCookies("ticket-token")
         )
     }
 }

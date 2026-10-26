@@ -9,8 +9,8 @@ class LinovelibDiagnosticsTest {
     @Test
     fun infoFormatsFieldsAndEscapesLineBreaks() {
         val entries = mutableListOf<DiagnosticEntry>()
-        val diagnostics = LinovelibDiagnostics { level, tag, message, throwable ->
-            entries += DiagnosticEntry(level, tag, message, throwable)
+        val diagnostics = LinovelibDiagnostics { _, tag, message, throwable ->
+            entries += DiagnosticEntry(tag, message, throwable)
         }
 
         diagnostics.info(
@@ -22,34 +22,34 @@ class LinovelibDiagnosticsTest {
             )
         )
 
-        assertEquals(1, entries.size)
-        assertEquals("LinovelibDiagnostic", entries.single().tag)
-        assertEquals("HTTP_OK status=200 url=https://tw.linovelib.com/a\\nb empty=null", entries.single().message)
-        assertEquals(null, entries.single().throwable)
+        val entry = entries.single()
+        assertEquals("LinovelibDiagnostic", entry.tag)
+        assertEquals("HTTP_OK status=200 url=https://tw.linovelib.com/a\\nb empty=null", entry.message)
+        assertEquals(null, entry.throwable)
     }
 
     @Test
-    fun inspectHtmlDetectsTraditionalAndSimplifiedFailureMarkers() {
+    fun detectsTraditionalAndSimplifiedFailureMarkers() {
         val diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
 
-        assertTrue(diagnostics.inspectHtml("前文內容加載失敗後文").hasLoadFailure)
-        assertTrue(diagnostics.inspectHtml("前文内容加载失败后文").hasLoadFailure)
-        assertFalse(diagnostics.inspectHtml("完整內容").hasLoadFailure)
-        assertEquals(4, diagnostics.inspectHtml("完整內容").characters)
+        assertTrue(diagnostics.hasLoadFailure("前文內容加載失敗後文"))
+        assertTrue(diagnostics.hasLoadFailure("前文内容加载失败后文"))
+        assertFalse(diagnostics.hasLoadFailure("完整內容"))
     }
 
     @Test
     fun errorIncludesFieldsAndThrowable() {
         val entries = mutableListOf<DiagnosticEntry>()
-        val diagnostics = LinovelibDiagnostics { level, tag, message, throwable ->
-            entries += DiagnosticEntry(level, tag, message, throwable)
+        val diagnostics = LinovelibDiagnostics { _, tag, message, throwable ->
+            entries += DiagnosticEntry(tag, message, throwable)
         }
         val failure = IllegalStateException("network failed")
 
         diagnostics.error("HTTP_ERROR", failure, mapOf("url" to "https://tw.linovelib.com"))
 
-        assertEquals("HTTP_ERROR url=https://tw.linovelib.com", entries.single().message)
-        assertEquals(failure, entries.single().throwable)
+        val entry = entries.single()
+        assertEquals("HTTP_ERROR url=https://tw.linovelib.com", entry.message)
+        assertEquals(failure, entry.throwable)
     }
 
     @Test
@@ -63,7 +63,6 @@ class LinovelibDiagnosticsTest {
     }
 
     private data class DiagnosticEntry(
-        val level: Int,
         val tag: String,
         val message: String,
         val throwable: Throwable?

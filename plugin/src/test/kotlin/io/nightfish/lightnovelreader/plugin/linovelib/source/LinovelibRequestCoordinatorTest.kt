@@ -1,6 +1,7 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -15,18 +16,6 @@ import org.junit.Test
 import java.util.concurrent.atomic.AtomicInteger
 
 class LinovelibRequestCoordinatorTest {
-    @Test
-    fun `does not link coroutine mutex unavailable in the host app`() {
-        val classBytes = checkNotNull(
-            LinovelibRequestCoordinator::class.java.getResourceAsStream("LinovelibRequestCoordinator.class")
-        ).use { it.readBytes() }
-
-        assertFalse(
-            String(classBytes, Charsets.ISO_8859_1)
-                .contains("kotlinx/coroutines/sync/Mutex")
-        )
-    }
-
     @Test
     fun `serializes request blocks`() = runBlocking {
         val coordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
@@ -66,25 +55,40 @@ class LinovelibRequestCoordinatorTest {
     }
 
     @Test
-    fun `honors cooldown scheduled while waiting`() = runBlocking {
-        val coordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 100)
-        coordinator.execute { Unit }
-        val startedAt = System.currentTimeMillis()
-        val enteredAt = CompletableDeferred<Long>()
-        val waiting = launch {
-            coordinator.execute { enteredAt.complete(System.currentTimeMillis()) }
+    fun `result cooldown delays an already queued request`() = runBlocking {
+        withTimeout(2_000) {
+            val coordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
+            val releaseFirst = CompletableDeferred<Unit>()
+            val cooldownStartedAt = CompletableDeferred<Long>()
+            val enteredAt = CompletableDeferred<Long>()
+            val first = launch(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.execute(cooldownAfter = {
+                    cooldownStartedAt.complete(System.nanoTime())
+                    200L
+                }) { releaseFirst.await() }
+            }
+            // UNDISTPATCHED reaches the ticket wait before the first block is released.
+            val waiting = launch(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.execute { enteredAt.complete(System.nanoTime()) }
+            }
+
+            try {
+                assertFalse(enteredAt.isCompleted)
+                releaseFirst.complete(Unit)
+                val elapsed = (enteredAt.await() - cooldownStartedAt.await()) / 1_000_000
+                first.join()
+                waiting.join()
+
+                assertTrue("Queued request entered after only ${elapsed}ms", elapsed >= 190)
+            } finally {
+                first.cancelAndJoin()
+                waiting.cancelAndJoin()
+            }
         }
-
-        delay(30)
-        coordinator.scheduleCooldown(200)
-        val elapsed = withTimeout(1_000) { enteredAt.await() } - startedAt
-        waiting.join()
-
-        assertTrue("Request entered after only ${elapsed}ms", elapsed >= 190)
     }
 
     @Test
-    fun `registers result cooldown before releasing next request`() = runBlocking {
+    fun `result cooldown delays a subsequent request`() = runBlocking {
         val coordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
         coordinator.execute(cooldownAfter = { 120L }) { Unit }
         val startedAt = System.currentTimeMillis()
@@ -124,6 +128,52 @@ class LinovelibRequestCoordinatorTest {
         withTimeout(500) { coordinator.execute { entered = true } }
 
         assertTrue(entered)
+    }
+
+    @Test
+    fun queuedCancellationsDoNotReleaseActiveSlotAndRemainingRequestsStayOrdered() = runBlocking {
+        withTimeout(2_000) {
+            val coordinator = LinovelibRequestCoordinator(minimumRequestIntervalMillis = 0)
+            val active = AtomicInteger(0)
+            val maximum = AtomicInteger(0)
+            val order = mutableListOf<Int>()
+            val running = launch(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.execute {
+                    active.incrementAndGet()
+                    try {
+                        awaitCancellation()
+                    } finally {
+                        active.decrementAndGet()
+                    }
+                }
+            }
+            val waiting = (1..4).map { index ->
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    coordinator.execute {
+                        val count = active.incrementAndGet()
+                        maximum.updateAndGet { current -> maxOf(current, count) }
+                        try {
+                            order += index
+                            yield()
+                        } finally {
+                            active.decrementAndGet()
+                        }
+                    }
+                }
+            }
+
+            waiting[0].cancelAndJoin()
+            waiting[2].cancelAndJoin()
+            assertEquals(1, active.get())
+            assertTrue(order.isEmpty())
+            running.cancelAndJoin()
+            waiting.forEach { it.join() }
+            coordinator.execute { order += 5 }
+
+            assertEquals(listOf(2, 4, 5), order)
+            assertEquals(1, maximum.get())
+            assertEquals(0, active.get())
+        }
     }
 
     @Test

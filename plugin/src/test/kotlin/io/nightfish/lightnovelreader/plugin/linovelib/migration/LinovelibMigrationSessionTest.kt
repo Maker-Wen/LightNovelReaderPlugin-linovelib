@@ -28,7 +28,6 @@ class LinovelibMigrationSessionTest {
     private class Host : MigrationHost {
         var load: MigrationLoadResult = MigrationLoadResult.Candidate
         var calls = 0
-        val progressCallbacks = mutableListOf<(MigrationProgress) -> Unit>()
         var execute: (() -> Unit, (MigrationProgress) -> Unit) -> MigrationAttemptResult = { admission, _ ->
             admission()
             MigrationAttemptResult.Completed
@@ -36,7 +35,6 @@ class LinovelibMigrationSessionTest {
         override fun inspectOnLoad() = load
         override fun executeAttempt(admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult {
             calls++
-            progressCallbacks += onProgress
             return execute(admissionCheck, onProgress)
         }
     }
@@ -99,6 +97,26 @@ class LinovelibMigrationSessionTest {
         assertEquals(0, h.host.calls)
     }
 
+    @Test fun unavailableHostContractClosesTheSessionBeforeScheduling() {
+        listOf(NoSuchFieldException("API_VERSION"), NoClassDefFoundError("host API")).forEach { failure ->
+            val runtime = Runtime()
+            val host = object : MigrationHost {
+                override fun inspectOnLoad(): MigrationLoadResult = throw failure
+                override fun executeAttempt(admissionCheck: () -> Unit, onProgress: (MigrationProgress) -> Unit): MigrationAttemptResult =
+                    error("An unavailable host must not execute a migration")
+            }
+            val session = LinovelibMigrationSession(host, runtime, {}, {})
+            assertFalse(session.onLoad())
+            session.onActivityCreated(true, false, true)
+            session.onMainResumed()
+            session.start()
+            assertEquals(MigrationState.Closed, session.state)
+            assertFalse(session.isAlive)
+            assertTrue(runtime.shutDown)
+            assertTrue(runtime.workers.isEmpty())
+        }
+    }
+
     @Test fun recreationKeepsTheAttemptAndDoesNotExtendItsDeadline() {
         val h = Harness().apply { open(); ready = false }
         h.session.start()
@@ -136,22 +154,32 @@ class LinovelibMigrationSessionTest {
         assertEquals(MigrationState.Stopped(MigrationReason.StartupConflict), h.session.state)
     }
 
-    @Test fun lateProgressFromAttemptACannotChangeAttemptBOrItsTerminalState() {
+    @Test fun retryFollowsSynchronousProgressAndFailureDelivery() {
         val h = Harness().apply { open() }
-        h.host.execute = { _, _ -> MigrationAttemptResult.NotCommitted(MigrationReason.StorageFailure, true) }
+        h.host.execute = { _, progress ->
+            progress(MigrationProgress(MigrationStage.Merging, 9, 10))
+            MigrationAttemptResult.NotCommitted(MigrationReason.StorageFailure, true)
+        }
         h.session.start()
-        val a = h.session.state as MigrationState.Running
-        h.settle()
-        h.host.execute = { _, _ -> MigrationAttemptResult.Completed }
+        val firstAttempt = (h.session.state as MigrationState.Running).attemptId
+        h.runtime.work()
+        // The real adapter produces progress before returning; the main Handler delivers it
+        // before the attempt result, so retry cannot begin between these queued callbacks.
+        h.runtime.posts.removeFirst().invoke()
+        assertEquals(MigrationProgress(MigrationStage.Merging, 9, 10),
+            (h.session.state as MigrationState.Running).progress)
         h.session.start()
-        val b = h.session.state
-        assertNotEquals(a.attemptId, (b as MigrationState.Running).attemptId)
-        h.host.progressCallbacks[0](MigrationProgress(MigrationStage.Merging, 9, 10))
+        assertTrue(h.runtime.workers.isEmpty())
         h.runtime.deliver()
-        assertEquals(b, h.session.state)
+        assertEquals(MigrationState.RetryableFailure(MigrationReason.StorageFailure), h.session.state)
+
+        h.host.execute = { _, progress ->
+            progress(MigrationProgress(MigrationStage.Saving, 10, 10))
+            MigrationAttemptResult.Completed
+        }
+        h.session.start()
+        assertNotEquals(firstAttempt, (h.session.state as MigrationState.Running).attemptId)
         h.settle()
-        h.host.progressCallbacks[1](MigrationProgress(MigrationStage.Saving, 10, 10))
-        h.runtime.deliver()
         assertEquals(MigrationState.Completed, h.session.state)
         assertEquals(2, h.host.calls)
     }
@@ -172,13 +200,15 @@ class LinovelibMigrationSessionTest {
 
     @Test fun newEntryCannotDiscardAnInFlightCommit() {
         val h = Harness().apply { open() }
+        var runningDuringCommit = false
         h.host.execute = { _, _ ->
             h.session.onActivityCreated(true, false, false)
-            assertTrue(h.session.state is MigrationState.Running)
+            runningDuringCommit = h.session.state is MigrationState.Running
             MigrationAttemptResult.Completed
         }
         h.session.start()
         h.settle()
+        assertTrue(runningDuringCommit)
         assertEquals(MigrationState.Completed, h.session.state)
         h.session.onMainResumed()
         assertEquals(MigrationState.Completed, h.session.state)
@@ -186,14 +216,18 @@ class LinovelibMigrationSessionTest {
 
     @Test fun invalidatedSessionWaitsForRollbackAndDoesNotOfferRetry() {
         val h = Harness().apply { open() }
+        var admissionFailure: Throwable? = null
+        var runningAfterInvalidation = false
         h.host.execute = { admission, _ ->
             h.session.onActivityCreated(true, false, false)
-            try { admission(); fail("Should reject this entry") } catch (_: MigrationAdmissionException) { }
-            assertTrue(h.session.state is MigrationState.Running)
+            admissionFailure = runCatching { admission() }.exceptionOrNull()
+            runningAfterInvalidation = h.session.state is MigrationState.Running
             MigrationAttemptResult.NotCommitted(MigrationReason.NotReady, true)
         }
         h.session.start()
         h.settle()
+        assertTrue(admissionFailure is MigrationAdmissionException)
+        assertTrue(runningAfterInvalidation)
         assertEquals(MigrationState.Stopped(MigrationReason.SessionChanged), h.session.state)
         h.session.start()
         assertEquals(1, h.host.calls)
@@ -201,14 +235,16 @@ class LinovelibMigrationSessionTest {
 
     @Test fun unloadRevokesAdmissionImmediatelyAndIgnoresPendingUiCallbacks() {
         val h = Harness().apply { open() }
+        var admissionFailure: Throwable? = null
         h.host.execute = { admission, progress ->
             h.session.onUnload()
-            assertThrows(MigrationAdmissionException::class.java) { admission() }
+            admissionFailure = runCatching { admission() }.exceptionOrNull()
             progress(MigrationProgress(MigrationStage.Saving, 3, 3))
             MigrationAttemptResult.Completed
         }
         h.session.start()
         h.settle()
+        assertTrue(admissionFailure is MigrationAdmissionException)
         assertTrue(h.runtime.shutDown)
         assertEquals(MigrationState.Closed, h.session.state)
         h.session.start()
@@ -337,14 +373,18 @@ class LinovelibMigrationSessionTest {
     @Test fun foregroundRebindDisplayFailureRevokesAdmissionButPreservesInFlightStorageTruth() {
         listOf(MigrationAttemptResult.Completed, MigrationAttemptResult.NotCommitted(MigrationReason.NotReady, true)).forEach { outcome ->
             val h = Harness().apply { open() }
+            var runningAfterDisplayFailure = false
+            var admissionFailure: Throwable? = null
             h.host.execute = { admission, _ ->
                 h.session.onForegroundDisplayFailure()
-                assertTrue(h.session.state is MigrationState.Running)
-                assertThrows(MigrationAdmissionException::class.java) { admission() }
+                runningAfterDisplayFailure = h.session.state is MigrationState.Running
+                admissionFailure = runCatching { admission() }.exceptionOrNull()
                 outcome
             }
             h.session.start()
             h.settle()
+            assertTrue(runningAfterDisplayFailure)
+            assertTrue(admissionFailure is MigrationAdmissionException)
             assertEquals(if (outcome == MigrationAttemptResult.Completed) MigrationState.Completed
                          else MigrationState.Stopped(MigrationReason.SessionChanged), h.session.state)
             h.session.start()

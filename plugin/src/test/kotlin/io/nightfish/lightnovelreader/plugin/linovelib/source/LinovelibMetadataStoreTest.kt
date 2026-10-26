@@ -3,7 +3,6 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertNotNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
@@ -11,6 +10,12 @@ import java.util.concurrent.Executors
 class LinovelibMetadataStoreTest {
     private val parser = LinovelibHtmlParser()
     private val metadata = LinovelibMetadataStore()
+    private val details = LinovelibBookDetails(
+        htmlLoader = { error("Test supplies HTML directly") },
+        parser = parser,
+        diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
+        metadata = metadata
+    )
 
     @Test
     fun `each index evicts the oldest write at 257 entries and reads do not refresh it`() {
@@ -57,21 +62,20 @@ class LinovelibMetadataStoreTest {
         metadata.rememberBook(book(1).copy(author = "A", authorUrl = "/author/a", relatedLinks = mapOf("Tag" to "/first")))
         metadata.rememberBook(book(2).copy(relatedLinks = mapOf("Tag" to "/latest")))
         metadata.rememberBook(book(1))
-        metadata.rememberBook(book(3).copy(title = " ", relatedLinks = mapOf("Tag" to "/invalid")))
+        assertNull(details.acceptHtml("3", """
+            <h1 class="book-title"> </h1>
+            <span class="tag-small-group"><em class="tag-small red"><a href="/invalid">Tag</a></em></span>
+        """))
 
-        assertEquals("/latest", metadata.relatedTarget("  Tag  "))
+        assertEquals("/latest", metadata.relatedTarget("Tag"))
         assertEquals("/author/a", metadata.relatedTarget("作者：A"))
         assertNull(metadata.bookInformation("3"))
     }
 
     @Test
-    fun `stored details snapshot mutable inputs and belong to one source`() {
-        val tags = mutableListOf("Tag")
-        val links = linkedMapOf("Tag" to "/original")
-        metadata.rememberBook(book(1).copy(tags = tags, relatedLinks = links))
+    fun `stored details and summaries belong to one source`() {
+        metadata.rememberBook(book(1).copy(tags = listOf("Tag"), relatedLinks = mapOf("Tag" to "/original")))
         metadata.rememberBooks(listOf(summary(2)))
-        tags.clear()
-        links["Tag"] = "/changed"
 
         assertEquals(listOf("Tag"), metadata.bookInformation("1")?.tags)
         assertEquals(mapOf("Tag" to "/original"), metadata.bookInformation("1")?.relatedLinks)
@@ -116,8 +120,8 @@ class LinovelibMetadataStoreTest {
               <em class="tag-small orange"><a href="/publisher/$target.html">Publisher</a></em>
             </span>
         """
-        parser.parseBookInformation("1", html("<h1 class=\"book-title\">Book</h1>", "valid")).also(metadata::rememberBook)
-        parser.parseBookInformation("1", html("", "invalid")).also(metadata::rememberBook)
+        assertNotNull(details.acceptHtml("1", html("<h1 class=\"book-title\">Book</h1>", "valid")))
+        assertNull(details.acceptHtml("1", html("", "invalid")))
 
         assertEquals("${LinovelibUrls.HOST}/author/valid.html", metadata.relatedTarget("作者：Author"))
         assertEquals("${LinovelibUrls.HOST}/wenku/valid.html", metadata.relatedTarget("Tag"))
@@ -126,12 +130,12 @@ class LinovelibMetadataStoreTest {
 
     @Test
     fun invalidBookInformationDoesNotReplaceSuccessfulCache() {
-        val cached = parser.parseBookInformation("1", "<h1 class=\"book-title\">Book</h1>").also(metadata::rememberBook)
+        val cached = requireNotNull(details.acceptHtml("1", "<h1 class=\"book-title\">Book</h1>"))
 
         listOf("<html></html>", "<meta property=\"og:novel:book_name\" content=\"   \" />").forEach { html ->
-            assertTrue(parser.parseBookInformation("1", html).also(metadata::rememberBook).title.isBlank())
+            assertNull(details.acceptHtml("1", html))
             assertEquals(cached, metadata.bookInformation("1"))
-            assertTrue(parser.parseBookInformation("2", html).also(metadata::rememberBook).title.isBlank())
+            assertNull(details.acceptHtml("2", html))
             assertNull(metadata.bookInformation("2"))
         }
     }

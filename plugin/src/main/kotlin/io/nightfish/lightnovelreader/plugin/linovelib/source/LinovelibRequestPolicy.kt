@@ -15,8 +15,8 @@ internal object LinovelibRequestPolicy {
         val headerDelay = retryAfter
             ?.trim()
             ?.toLongOrNull()
+            ?.coerceIn(0L, maximumRetryDelayMillis / 1_000L)
             ?.times(1_000L)
-            ?.coerceIn(0L, maximumRetryDelayMillis)
 
         return when {
             statusCode == 429 -> headerDelay ?: progressiveDelay(3_000L, attempt)
@@ -29,5 +29,5 @@ internal object LinovelibRequestPolicy {
     fun networkRetryDelayMillis(attempt: Int): Long = progressiveDelay(1_000L, attempt)
 
     private fun progressiveDelay(baseMillis: Long, attempt: Int): Long =
-        (baseMillis * (1L shl attempt.coerceIn(0, 5))).coerceAtMost(maximumRetryDelayMillis)
+        baseMillis * (1L shl attempt)
 }

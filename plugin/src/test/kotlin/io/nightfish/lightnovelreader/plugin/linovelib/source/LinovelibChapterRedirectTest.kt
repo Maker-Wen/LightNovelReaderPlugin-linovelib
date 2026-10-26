@@ -40,7 +40,7 @@ class LinovelibChapterRedirectTest {
         ).forEach { nextPageUrl ->
             val chapter = parser.parseChapterContent(
                 chapterId = "101",
-                html = """<script>var ReadParams={url_next:"$nextPageUrl"}</script>""",
+                html = """<div id="acontent"></div><script>var ReadParams={url_next:"$nextPageUrl"}</script>""",
                 baseUrl = finalUrl
             )
 

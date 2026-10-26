@@ -72,12 +72,10 @@ internal class LinovelibMigrationSession(
     val isAlive: Boolean get() = alive
     @Volatile private var coldSessionValid = false
     private var firstActivitySeen = false
-    private var loaded = false
     private var nextAttemptId = 0L
 
     fun onLoad(): Boolean {
-        if (loaded || !alive) return false
-        loaded = true
+        if (!alive) return false
         if (runCatching { host.inspectOnLoad() }.getOrDefault(MigrationLoadResult.Disabled) != MigrationLoadResult.Candidate) {
             close()
             return false
@@ -86,7 +84,7 @@ internal class LinovelibMigrationSession(
     }
 
     fun onActivityCreated(isMain: Boolean, restored: Boolean, ordinaryEntry: Boolean) {
-        if (!alive || !loaded) return
+        if (!alive) return
         if (!firstActivitySeen) {
             firstActivitySeen = true
             coldSessionValid = isMain && !restored && ordinaryEntry

@@ -24,6 +24,32 @@ class MigrationBodyHostTest {
         assertTrue(plan.snapshot.data.getValue("userReadingDataEntities").jsonArray.isEmpty())
     }
 
+    @Test fun malformedDailyDatesAreIsolatedAndCurrentRowsPreservedOnTheShrunkHost() {
+        val timeCount = MigrationPlanner.encodeHours(IntArray(24) { if (it == 0) 1 else 0 })
+        val invalid = buildJsonObject {
+            put("date", "not-a-date"); put("timeCount", timeCount)
+        }
+        val valid = buildJsonObject {
+            put("date", "2026-10-11"); put("timeCount", timeCount)
+        }
+        val current = MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID).let {
+            it.copy(data = JsonObject(it.data + ("dailyCountEntities" to JsonArray(listOf(invalid)))))
+        }
+        val tw = MigrationData.emptySnapshot(MigrationData.TW_SOURCE_ID).let {
+            it.copy(data = JsonObject(it.data + ("dailyCountEntities" to JsonArray(listOf(invalid, valid)))))
+        }
+
+        val currentState = MigrationNormalizer.current(current)
+        assertTrue(currentState.data.getValue("dailyCountEntities").jsonArray.isEmpty())
+        assertEquals(mapOf("dailyCountEntities" to listOf(invalid)), currentState.preservedPersonalRows)
+        assertEquals(mapOf("dailyCountEntities" to setOf("not-a-date")), currentState.protectedKeys)
+        assertEquals(JsonArray(listOf(valid)), MigrationNormalizer.tw(tw).data.getValue("dailyCountEntities"))
+
+        val plan = MigrationPlanner.plan(current, tw)
+        assertTrue(plan.hasRecoverableData)
+        assertEquals(JsonArray(listOf(valid, invalid)), plan.snapshot.data.getValue("dailyCountEntities"))
+    }
+
     @Test fun legalSentinelsAndValidChapterProgressSurviveOnTheShrunkHost() {
         val reading = buildJsonObject {
             put("id", "1"); put("lastReadTime", java.time.LocalDateTime.MIN.toString()); put("totalReadTime", -1)
@@ -59,21 +85,47 @@ class MigrationBodyHostTest {
         assertTrue(plan.snapshot.data.getValue("bookRecordEntities").jsonArray.isEmpty())
     }
 
-    @Test fun recoverableTextWithUnsupportedFieldsLoadsOnTheActualHost() {
+    @Test fun textOutsideTheActualHostSchemaIsNotRepairedOrMigrated() {
         val original = buildJsonObject { put("text", "retained text"); put("unsupported", 1) }
         assertThrows(IllegalArgumentException::class.java) { SimpleTextComponentData.jsonSerializer.fromJsonElement(original) }
-        val repaired = migratedData("simple_text", original)
-        assertEquals("retained text", SimpleTextComponentData.jsonSerializer.fromJsonElement(repaired).text)
+        assertTrue(migratedBodies("simple_text", original).isEmpty())
     }
 
-    @Test fun recoverableImageWithUnsupportedFieldsLoadsOnTheActualHost() {
+    @Test fun imageOutsideTheActualHostSchemaIsNotRepairedOrMigrated() {
         val original = buildJsonObject { put("uri", "file:/existing/image.png"); put("unsupported", true) }
         assertThrows(IllegalArgumentException::class.java) { ImageComponentData.jsonSerializer.fromJsonElement(original) }
-        val repaired = migratedData("image", original)
-        assertEquals("file:/existing/image.png", ImageComponentData.jsonSerializer.fromJsonElement(repaired).uri.toString())
+        assertTrue(migratedBodies("image", original).isEmpty())
     }
 
-    private fun migratedData(id: String, data: JsonObject): JsonObject {
+    @Test fun legalTextDataRemainsUnchangedAndReadableOnTheActualHost() {
+        for (includeId in listOf(false, true)) {
+            val original = buildJsonObject {
+                put("text", "retained text")
+                if (includeId) put("id", "simple_text")
+            }
+            val migrated = migratedData("simple_text", original)
+            assertEquals(original, migrated)
+            assertEquals("retained text", SimpleTextComponentData.jsonSerializer.fromJsonElement(migrated).text)
+        }
+    }
+
+    @Test fun legalImageDataRemainsUnchangedAndReadableOnTheActualHost() {
+        for (includeId in listOf(false, true)) {
+            val original = buildJsonObject {
+                put("uri", "file:/existing/image.png")
+                if (includeId) put("id", "image")
+            }
+            val migrated = migratedData("image", original)
+            assertEquals(original, migrated)
+            assertEquals("file:/existing/image.png", ImageComponentData.jsonSerializer.fromJsonElement(migrated).uri.toString())
+        }
+    }
+
+    private fun migratedData(id: String, data: JsonObject): JsonObject =
+        Json.parseToJsonElement(migratedBodies(id, data).single().jsonObject.getValue("content").jsonPrimitive.content)
+            .jsonObject.getValue("components").jsonArray.single().jsonObject.getValue("data").jsonObject
+
+    private fun migratedBodies(id: String, data: JsonObject): JsonArray {
         val content = buildJsonObject { put("components", JsonArray(listOf(buildJsonObject { put("id", id); put("data", data) }))) }
         val body = buildJsonObject {
             put("id", "linovelib-v3:11"); put("title", "chapter"); put("content", content.toString())
@@ -83,8 +135,6 @@ class MigrationBodyHostTest {
             it.copy(data = JsonObject(it.data + ("chapterContentEntities" to JsonArray(listOf(body)))))
         }
         val result = MigrationPlanner.plan(MigrationData.emptySnapshot(MigrationData.CURRENT_SOURCE_ID), tw).snapshot
-        return Json.parseToJsonElement(result.data.getValue("chapterContentEntities").jsonArray.single().jsonObject
-            .getValue("content").jsonPrimitive.content).jsonObject.getValue("components").jsonArray.single().jsonObject
-            .getValue("data").jsonObject
+        return result.data.getValue("chapterContentEntities").jsonArray
     }
 }

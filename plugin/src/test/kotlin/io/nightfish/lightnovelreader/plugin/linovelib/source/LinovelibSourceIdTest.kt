@@ -5,7 +5,7 @@ import org.junit.Test
 
 class LinovelibSourceIdTest {
     @Test
-    fun `API 2 source id uses unified Linovelib name`() {
+    fun `source id retains the unified Linovelib identity`() {
         assertEquals("linovelib".hashCode(), LINOVELIB_SOURCE_ID)
     }
 }
