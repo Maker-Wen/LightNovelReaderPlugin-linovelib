@@ -1,3 +1,5 @@
+import com.android.build.api.artifact.SingleArtifact
+import com.android.build.api.variant.ApplicationVariant
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import org.jetbrains.kotlin.gradle.tasks.KotlinJvmCompile
 import java.util.zip.ZipFile
@@ -68,14 +70,15 @@ androidComponents {
             val outputImpl = output as com.android.build.api.variant.impl.VariantOutputImpl
             outputImpl.outputFileName = outputImpl.outputFileName.get().replace(".apk", ".apk.lnrp")
         }
-    }
-}
-
-androidComponents {
-    onVariants { variant ->
         variant.sources.manifests.addStaticManifestFile(
             layout.buildDirectory.file("generated/ksp/${variant.name}/resources/auto_register_manifest.xml").get().toString()
         )
+        val verifyHostAbi = registerHostAbiCheck(variant)
+        tasks.configureEach {
+            if (name == "assemble${variant.name.replaceFirstChar(Char::uppercase)}") {
+                dependsOn(verifyHostAbi)
+            }
+        }
     }
 }
 
@@ -137,49 +140,55 @@ fun registerHostClassAbiCheck(variant: String) = tasks.register(
     }
 }
 
-fun registerHostAbiCheck(variant: String) = tasks.register(
-    "verify${variant.replaceFirstChar(Char::uppercase)}HostAbi"
-) {
-    val variantTitle = variant.replaceFirstChar(Char::uppercase)
-    dependsOn("package$variantTitle", "verify${variantTitle}HostClassAbi")
-    doLast {
-        val apk = fileTree(layout.buildDirectory.dir("outputs/apk/$variant")) {
-            include("*.apk", "*.apk.lnrp")
-        }.files.maxByOrNull(File::lastModified)
-            ?: error("No packaged $variant APK found for host ABI verification")
-        val dexContents = mutableMapOf<String, String>()
-        ZipFile(apk).use { zip ->
-            val entries = zip.entries()
-            while (entries.hasMoreElements()) {
-                val entry = entries.nextElement()
-                if (entry.name.matches(Regex("classes\\d*\\.dex"))) {
-                    dexContents[entry.name] = zip.getInputStream(entry).use { input ->
-                        String(input.readBytes(), Charsets.ISO_8859_1)
-                    }
+fun registerHostAbiCheck(variant: ApplicationVariant): TaskProvider<Task> {
+    val variantName = variant.name
+    val variantTitle = variantName.replaceFirstChar(Char::uppercase)
+    val apkDirectory = variant.artifacts.get(SingleArtifact.APK)
+    val builtArtifactsLoader = variant.artifacts.getBuiltArtifactsLoader()
+    return tasks.register("verify${variantTitle}HostAbi") {
+        dependsOn("verify${variantTitle}HostClassAbi")
+        inputs.dir(apkDirectory)
+        doLast {
+            val artifacts = builtArtifactsLoader.load(apkDirectory.get())
+                ?: error("No packaged ${variantName} APK metadata found for host ABI verification")
+            check(artifacts.variantName == variantName) {
+                "Expected ${variantName} APK metadata, found ${artifacts.variantName}"
+            }
+            check(artifacts.elements.isNotEmpty()) { "No packaged ${variantName} APK found for host ABI verification" }
+            artifacts.elements.forEach { artifact ->
+                verifyPackagedHostAbi(file(artifact.outputFile))
+            }
+        }
+    }
+}
+
+fun verifyPackagedHostAbi(apk: File) {
+    val dexContents = mutableMapOf<String, String>()
+    ZipFile(apk).use { zip ->
+        val entries = zip.entries()
+        while (entries.hasMoreElements()) {
+            val entry = entries.nextElement()
+            if (entry.name.matches(Regex("classes\\d*\\.dex"))) {
+                dexContents[entry.name] = zip.getInputStream(entry).use { input ->
+                    String(input.readBytes(), Charsets.ISO_8859_1)
                 }
             }
         }
-        val classMarker = "LinovelibImageStore"
-        val forbiddenForClass = listOf("java/util/Base64", "j\$/util/Base64", "withoutPadding")
-        val matchingDex = dexContents.filterValues { classMarker in it }
-        check(matchingDex.isNotEmpty()) { "$classMarker was not found in packaged DEX files" }
-        val badDex = matchingDex.filterValues { dex -> forbiddenForClass.any(dex::contains) }
-        check(badDex.isEmpty()) {
-            "$classMarker shares packaged DEX with unavailable host APIs: ${badDex.keys}"
-        }
+    }
+    val classMarker = "LinovelibImageStore"
+    val forbiddenForClass = listOf("java/util/Base64", "j\$/util/Base64", "withoutPadding")
+    val matchingDex = dexContents.filterValues { classMarker in it }
+    check(matchingDex.isNotEmpty()) { "$classMarker was not found in packaged DEX files" }
+    val badDex = matchingDex.filterValues { dex -> forbiddenForClass.any(dex::contains) }
+    check(badDex.isEmpty()) {
+        "$classMarker shares packaged DEX with unavailable host APIs: ${badDex.keys}"
     }
 }
 
 val verifyDebugHostClassAbi = registerHostClassAbiCheck("debug")
 registerHostClassAbiCheck("release")
-val verifyDebugHostAbi = registerHostAbiCheck("debug")
-val verifyReleaseHostAbi = registerHostAbiCheck("release")
 tasks.configureEach {
-    when (name) {
-        "testDebugUnitTest" -> dependsOn(verifyDebugHostClassAbi)
-        "assembleDebug" -> dependsOn(verifyDebugHostAbi)
-        "assembleRelease" -> dependsOn(verifyReleaseHostAbi)
-    }
+    if (name == "testDebugUnitTest") dependsOn(verifyDebugHostClassAbi)
 }
 
 dependencies {
@@ -198,5 +207,5 @@ dependencies {
     testImplementation(libs.junit)
     testImplementation(libs.jsoup)
     // Tests run against the API exposed by the actual LightNovelReader 1.2.2 host.
-    testImplementation(libs.lightnovelreader.host.api)
+    testImplementation(libs.lightnovelreader.api)
 }

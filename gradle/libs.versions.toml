@@ -6,11 +6,9 @@ kotlin = "2.3.10"
 kotlinxCoroutinesCore = "1.10.2"
 runtime = "1.11.1"
 navigationRuntimeKtx = "2.9.8"
-jetbrainsKotlinJvm = "2.3.10"
 kotlinSerialization = "1.10.0"
 jsoup = "1.22.1"
 lightnovelreaderApi = "0.3"
-lightnovelreaderHostApi = "0.3"
 lightnovelreaderCompiler = "0.4-SNAPSHOT"
 junit = "4.13.2"
 
@@ -19,7 +17,6 @@ desugar_jdk_libs = { module = "com.android.tools:desugar_jdk_libs", version.ref 
 androidx-runtime = { module = "androidx.compose.runtime:runtime", version.ref = "runtime" }
 kotlinx-coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "kotlinxCoroutinesCore" }
 lightnovelreader-api = { module = "io.nightfish.lightnovelreader:api", version.ref = "lightnovelreaderApi" }
-lightnovelreader-host-api = { module = "io.nightfish.lightnovelreader:api", version.ref = "lightnovelreaderHostApi" }
 lightnovelreader-compiler = { module = "io.nightfish.lightnovelreader:compiler", version.ref = "lightnovelreaderCompiler" }
 androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationRuntimeKtx" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "kotlinSerialization" }
@@ -32,5 +29,5 @@ android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
 android-dynamic-feature = { id = "com.android.dynamic-feature", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-jetbrains-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "jetbrainsKotlinJvm" }
+jetbrains-kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 google_ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }

@@ -21,11 +21,26 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+          ref: refs/tags/${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+      - name: Verify release tag
+        id: release
+        run: |
+          TAG_REF="refs/tags/$RELEASE_TAG"
+          git check-ref-format "$TAG_REF"
+          git show-ref --verify --quiet "$TAG_REF"
+          TAG_COMMIT=$(git rev-parse --verify "$TAG_REF^{commit}")
+          [ "$TAG_COMMIT" = "$(git rev-parse HEAD)" ] || { echo "tag does not match checked-out commit: $RELEASE_TAG" >&2; exit 1; }
+          VERSION="${RELEASE_TAG#v}"
+          GRADLE_VERSION=$(awk -F'"' '/versionName = / { print $2; exit }' plugin/build.gradle.kts)
+          [ "$VERSION" = "$GRADLE_VERSION" ] || { echo "tag $VERSION does not match versionName $GRADLE_VERSION" >&2; exit 1; }
+          echo "commit=$TAG_COMMIT" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -66,19 +81,35 @@ jobs:
       - name: Prepare release asset
         id: asset
         run: |
-          TAG="${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
+          TAG="$RELEASE_TAG"
           VERSION="${TAG#v}"
-          GRADLE_VERSION=$(awk -F'"' '/versionName = / { print $2; exit }' plugin/build.gradle.kts)
-          [ "$VERSION" = "$GRADLE_VERSION" ] || { echo "tag $VERSION does not match versionName $GRADLE_VERSION" >&2; exit 1; }
-          SRC=$(find plugin/build/outputs/apk/release -name '*.apk.lnrp' ! -name '*unsigned*' | head -1)
-          if [ -z "$SRC" ]; then
-            echo "signed release apk not found" >&2
-            exit 1
-          fi
+          SRC=$(python3 - <<'PYTHON'
+          import json
+          import os
+          from pathlib import Path
+
+          directory = Path("plugin/build/outputs/apk/release")
+          metadata = json.loads((directory / "output-metadata.json").read_text())
+          if metadata["artifactType"]["type"] != "APK" or metadata["variantName"] != "release":
+              raise SystemExit("unexpected release artifact metadata")
+          elements = metadata["elements"]
+          if len(elements) != 1:
+              raise SystemExit("expected exactly one release APK")
+          element = elements[0]
+          if element["versionName"] != os.environ["RELEASE_TAG"].removeprefix("v"):
+              raise SystemExit("release APK version does not match tag")
+          filename = element["outputFile"]
+          if Path(filename).name != filename or not filename.endswith(".apk.lnrp") or "-unsigned" in filename:
+              raise SystemExit("expected a signed release APK filename")
+          apk = directory / filename
+          if not apk.is_file():
+              raise SystemExit("release APK from metadata does not exist")
+          print(apk)
+          PYTHON
+          )
           OUT="Linovelib-${VERSION}.apk.lnrp"
           cp "$SRC" "$OUT"
           SHA=$(sha256sum "$OUT" | awk '{print $1}')
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "out=$OUT" >> "$GITHUB_OUTPUT"
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
@@ -92,10 +123,20 @@ jobs:
         if: ${{ github.event_name == 'push' || inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          RELEASE_ASSET: ${{ steps.asset.outputs.out }}
+          RELEASE_SHA: ${{ steps.asset.outputs.sha }}
         run: |
-          TAG="${{ steps.asset.outputs.tag }}"
-          OUT="${{ steps.asset.outputs.out }}"
-          SHA="${{ steps.asset.outputs.sha }}"
+          TAG="$RELEASE_TAG"
+          OUT="$RELEASE_ASSET"
+          SHA="$RELEASE_SHA"
+          TAG_REF="refs/tags/$TAG"
+          REMOTE_COMMIT=$(git ls-remote --exit-code --tags origin "$TAG_REF" "$TAG_REF^{}" | awk '
+            /\^\{\}$/ { peeled = $1; next }
+            { direct = $1 }
+            END { print peeled ? peeled : direct }
+          ')
+          [ "$REMOTE_COMMIT" = "$RELEASE_COMMIT" ] || { echo "remote tag no longer matches built commit: $TAG" >&2; exit 1; }
           VERSION="${TAG#v}"
           NOTES="docs/releases/${TAG}.md"
           [ -f "$NOTES" ] || { echo "release notes not found: $NOTES" >&2; exit 1; }
@@ -107,5 +148,5 @@ jobs:
             gh release upload "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --clobber
             gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md
           else
-            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md --draft
+            gh release create "$TAG" "$OUT" --repo "$GITHUB_REPOSITORY" --title "Linovelib $VERSION" --notes-file release-notes.md --draft --verify-tag
           fi
