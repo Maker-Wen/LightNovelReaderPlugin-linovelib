@@ -1,94 +1,61 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import io.nightfish.lightnovelreader.api.book.ChapterInformation
-import io.nightfish.lightnovelreader.api.book.MutableChapterContent
-import io.nightfish.lightnovelreader.api.book.Volume
-import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
-import kotlinx.serialization.json.Json
-import kotlinx.serialization.json.addJsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
-import kotlinx.serialization.json.putJsonArray
-import kotlinx.serialization.json.putJsonObject
+import org.jsoup.Jsoup
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
 class LinovelibVolumeCoverTest {
-    @Test
-    fun `uses first image from simplified and traditional illustration chapters as volume cover`() {
-        val images = Json.parseToJsonElement(
-            javaClass.getResource("/migration/real-illustration-components.json")!!.readText()
-        ).jsonObject.getValue("components").jsonArray
-        assertEquals(2, images.size)
-        // Reversal tests the selection rule; only the original order comes from the backup.
-        for (orderedImages in listOf(images.toList(), images.reversed())) {
-            val expectedUri = orderedImages.first().jsonObject.getValue("data")
-                .jsonObject.getValue("uri").jsonPrimitive.content
-            for (title in listOf("插图", "插圖")) {
-                val volume = Volume(
-                    volumeId = "volume-1",
-                    volumeTitle = "Volume 1",
-                    chapters = listOf(ChapterInformation("linovelib-v3:121898", title))
-                )
-                val chapter = MutableChapterContent(
-                    id = "linovelib-v3:121898",
-                    title = title,
-                    content = buildJsonObject {
-                        putJsonArray("components") { orderedImages.forEach { add(it) } }
-                    }
-                )
+    private val parser = LinovelibHtmlParser()
+    private val metadata = LinovelibMetadataStore()
+    private val html = javaClass.getResource("/html/catalog-5209.html")!!.readText()
 
-                assertEquals(title, expectedUri, findVolumeCoverUri(volume, mapOf(chapter.id to chapter)))
+    @Test
+    fun `real catalog supplies one explicit cover for each volume`() {
+        val catalog = parser.parseCatalog("5209", html)
+        metadata.rememberCatalog(catalog)
+
+        assertEquals(4, catalog.volumes.size)
+        val covers = listOf("315754", "317139", "320816", "322438")
+        catalog.volumes.forEachIndexed { index, volume ->
+            val expected = "https://img3.readpai.com/cover/5209/${covers[index]}.jpg"
+            assertEquals(expected, volume.coverUrl)
+            assertEquals(
+                expected,
+                metadata.volumeCover("5209", LinovelibChapterIds.forApp(volume.chapters.first().id))
+            )
+        }
+        assertNull(metadata.volumeCover("another-book", catalog.volumes.first().chapters.first().id))
+    }
+
+    @Test
+    fun `missing and blank cover URLs do not use illustration titles or placeholders`() {
+        for (coverUrl in listOf(null, "", " \t\n")) {
+            val document = Jsoup.parse(html)
+            val images = document.select(".volume-cover img")
+            if (coverUrl == null) images.removeAttr("data-src") else images.attr("data-src", coverUrl)
+            val catalog = parser.parseCatalog("5209", document.outerHtml())
+            metadata.rememberCatalog(catalog)
+
+            assertEquals(4, catalog.volumes.size)
+            catalog.volumes.forEach { volume ->
+                assertEquals("封面插画", volume.chapters.first().title)
+                assertNull("data-src=$coverUrl", volume.coverUrl)
+                assertNull("data-src=$coverUrl", metadata.volumeCover("5209", volume.chapters.first().id))
             }
         }
     }
 
     @Test
-    fun `does not infer volume covers from other chapter titles`() {
-        for (title in listOf("Chapter 1", "Illustrations", "插画")) {
-            val volume = Volume(
-                volumeId = "volume-1",
-                volumeTitle = "Volume 1",
-                chapters = listOf(ChapterInformation("chapter-1", title))
-            )
-            val chapter = MutableChapterContent(
-                id = "chapter-1",
-                title = title,
-                content = contentWithImage("file:/chapter-images/inline.webp")
-            )
+    fun `refreshed catalog without explicit covers removes previous mappings`() {
+        val original = parser.parseCatalog("5209", html)
+        metadata.rememberCatalog(original)
+        val document = Jsoup.parse(html)
+        document.select(".volume-cover").remove()
+        metadata.rememberCatalog(parser.parseCatalog("5209", document.outerHtml()))
 
-            assertNull(title, findVolumeCoverUri(volume, mapOf(chapter.id to chapter)))
-        }
-    }
-
-    @Test
-    fun `does not treat a regular title containing illustration as a cover chapter`() {
-        val volume = Volume(
-            volumeId = "volume-1",
-            volumeTitle = "Volume 1",
-            chapters = listOf(ChapterInformation("chapter-3", "第3章 插图里的秘密"))
-        )
-        val chapter = MutableChapterContent(
-            id = "chapter-3",
-            title = "第3章 插图里的秘密",
-            content = contentWithImage("file:/chapter-images/inline.webp")
-        )
-
-        assertNull(findVolumeCoverUri(volume, mapOf(chapter.id to chapter)))
-    }
-
-    private fun contentWithImage(uri: String) = buildJsonObject {
-        putJsonArray("components") {
-            addJsonObject {
-                put("id", ImageComponentData.ID)
-                putJsonObject("data") {
-                    put("uri", uri)
-                }
-            }
+        original.volumes.forEach { volume ->
+            assertNull(metadata.volumeCover("5209", volume.chapters.first().id))
         }
     }
 }

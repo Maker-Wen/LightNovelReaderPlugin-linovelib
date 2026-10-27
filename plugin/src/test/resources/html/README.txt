@@ -43,3 +43,12 @@ Parser 将该入口保留在默认点击榜行，其他三榜不推导独立展�
 文库各组不推导展开地址；Parser 按网页模块顺序解析全部分组，本样本合计 23 行。
 Provider 仅选择勇者新推、新书抢鲜、人气完本三组投影到宿主推荐栏目，保留来源完整书目与书序；本样本依次为 10、6、6 本，不将原始 23 行全部展示。
 Fixture SHA-256: 8adfd62703f88e56cbf619ca2925bba8daf0a9cf56af55e97ff57b70285bb200
+
+catalog-5209.html
+真实四卷目录样本，用于明确卷封面与章节关联回归。
+URL: https://www.bilinovel.net/novel/5209/catalog
+Fetched: 2026-10-27
+提取方式：Jsoup 选择 #volumes .catalog-volume，保留每卷全部节点，以 outerHtml 序列化并包入 #volumes。
+未修改卷名、封面地址、章节及占位图；广告块位于卷外，未保留。
+Original response SHA-256: 2e220686a5b5f84d062c391e3395bbfb5e9a406b5894448d407e3b664c292e6d
+Fixture SHA-256: 64ba4c4f373d7467408087441535a0b87acdd54f18892f14fac159c6ffe381fb

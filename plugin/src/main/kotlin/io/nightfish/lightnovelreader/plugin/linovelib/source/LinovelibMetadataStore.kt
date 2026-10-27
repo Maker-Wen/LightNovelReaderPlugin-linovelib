@@ -5,6 +5,21 @@ internal class LinovelibMetadataStore {
     private val books = linkedMapOf<String, ParsedBookInformation>()
     private val summaries = linkedMapOf<String, ParsedExploreBook>()
     private val relatedTargets = linkedMapOf<String, String>()
+    private val volumeCovers = linkedMapOf<String, Map<String, String>>()
+
+    @Synchronized
+    fun rememberCatalog(catalog: ParsedCatalog) {
+        volumeCovers.remember(catalog.bookId, buildMap {
+            catalog.volumes.forEach { volume ->
+                val firstChapter = volume.chapters.firstOrNull() ?: return@forEach
+                volume.coverUrl?.let { put(firstChapter.id, it) }
+            }
+        })
+    }
+
+    @Synchronized
+    fun volumeCover(bookId: String, firstChapterId: String): String? =
+        volumeCovers[bookId]?.get(LinovelibChapterIds.forWebsite(firstChapterId))
 
     @Synchronized
     fun rememberBook(book: ParsedBookInformation) {

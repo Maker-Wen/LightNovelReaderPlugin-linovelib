@@ -10,7 +10,6 @@ import io.nightfish.lightnovelreader.api.book.Volume
 import io.nightfish.lightnovelreader.api.content.builder.ContentBuilder
 import io.nightfish.lightnovelreader.api.content.builder.image
 import io.nightfish.lightnovelreader.api.content.builder.simpleText
-import io.nightfish.lightnovelreader.api.content.component.ImageComponentData
 import io.nightfish.lightnovelreader.api.util.Cache
 import io.nightfish.lightnovelreader.api.web.WebBookDataSource
 import io.nightfish.lightnovelreader.api.web.explore.ExplorePageProvider
@@ -21,9 +20,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.json.jsonArray
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import java.io.File
 import java.net.URI
 
@@ -34,7 +30,7 @@ class LinovelibWebDataSource internal constructor(
     context: Context,
     private val metadata: LinovelibMetadataStore,
     private val diagnostics: LinovelibDiagnostics,
-    detailHtmlLoader: (suspend (String) -> String)?
+    htmlLoader: (suspend (String) -> String)?
 ) : WebBookDataSource {
     // Keep the host's public injection constructor unchanged.
     constructor(context: Context) : this(context, LinovelibMetadataStore(), LinovelibDiagnostics(), null)
@@ -42,8 +38,9 @@ class LinovelibWebDataSource internal constructor(
     private val parser = LinovelibHtmlParser(host = LinovelibUrls.HOST)
     private val scope = CoroutineScope(Dispatchers.IO)
     private val httpClient = LinovelibHttpClient(diagnostics = diagnostics)
+    private val loadHtml = htmlLoader ?: httpClient::loadHtml
     private val details = LinovelibBookDetails(
-        detailHtmlLoader ?: httpClient::loadHtml, parser, diagnostics, metadata = metadata
+        loadHtml, parser, diagnostics, metadata = metadata
     )
     private var offlineProbeJob: Job? = null
     override val permits: Int = 1
@@ -104,7 +101,9 @@ class LinovelibWebDataSource internal constructor(
 
     override suspend fun getBookVolumes(id: String): BookVolumes = withContext(Dispatchers.IO) {
         runCatching {
-            parser.parseCatalog(id, httpClient.loadHtml(LinovelibUrls.catalog(LinovelibUrls.HOST, id))).toBookVolumes()
+            parser.parseCatalog(id, loadHtml(LinovelibUrls.catalog(LinovelibUrls.HOST, id)))
+                .also(metadata::rememberCatalog)
+                .toBookVolumes()
         }.getOrElse { error ->
             error.rethrowIfCancellation()
             diagnostics.error("CATALOG_ERROR", error, mapOf("bookId" to id))
@@ -141,7 +140,12 @@ class LinovelibWebDataSource internal constructor(
         volume: Volume,
         volumeChapterContentMap: MutableMap<String, ChapterContent>,
         context: Context
-    ): Uri? = findVolumeCoverUri(volume, volumeChapterContentMap)?.let(Uri::parse)
+    ): Uri? {
+        val firstChapter = volume.chapters.firstOrNull() ?: return null
+        val coverUrl = metadata.volumeCover(bookId, firstChapter.id) ?: return null
+        val cover = imageStore.localize(listOf(ParsedContentBlock.Image(coverUrl))).firstOrNull() ?: return null
+        return Uri.parse((cover as ParsedContentBlock.Image).url)
+    }
 
     internal fun openRelatedPage(tag: String, navController: Any?) {
         if (tag.isBlank()) return
@@ -289,25 +293,3 @@ internal suspend fun getChapterContentPages(
         blocks = pages.flatMap { it.blocks }
     )
 }
-
-
-internal fun findVolumeCoverUri(
-    volume: Volume,
-    volumeChapterContentMap: Map<String, ChapterContent>
-): String? = volume.chapters
-    .asSequence()
-    .filter { chapter -> chapter.title.trim() in ILLUSTRATION_TITLES }
-    .mapNotNull { chapter -> volumeChapterContentMap[chapter.id] }
-    .flatMap { chapter -> chapter.content["components"]?.jsonArray.orEmpty().asSequence() }
-    .mapNotNull { component ->
-        component.jsonObject
-            .takeIf { it["id"]?.jsonPrimitive?.content == ImageComponentData.ID }
-            ?.get("data")
-            ?.jsonObject
-            ?.get("uri")
-            ?.jsonPrimitive
-            ?.content
-    }
-    .firstOrNull()
-
-private val ILLUSTRATION_TITLES = setOf("插图", "插圖")

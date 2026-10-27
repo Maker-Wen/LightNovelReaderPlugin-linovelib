@@ -29,7 +29,8 @@ internal data class ParsedCatalog(
 
 internal data class ParsedVolume(
     val title: String,
-    val chapters: List<ParsedChapter>
+    val chapters: List<ParsedChapter>,
+    val coverUrl: String? = null
 )
 
 internal data class ParsedChapter(
@@ -134,7 +135,11 @@ internal class LinovelibHtmlParser(
                         val chapterTitle = chapter.selectFirst(".chapter-index")?.text().orEmpty()
                         ParsedChapter(chapterId, chapterTitle)
                     }
-                ParsedVolume(title, chapters)
+                val coverUrl = volume.selectFirst(".volume-cover img[data-src]")
+                    ?.attr("data-src")
+                    ?.takeIf(String::isNotBlank)
+                    ?.let(::normalizeUrl)
+                ParsedVolume(title, chapters, coverUrl)
             }
         return ParsedCatalog(bookId, volumes)
     }
