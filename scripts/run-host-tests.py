@@ -88,6 +88,11 @@ def main():
         for path in (production, api_jar, kotlin, coroutines):
             command += ["--classpath", str(path)]
         run(command + ["--output", str(dex), str(test_jar), str(junit), str(hamcrest)])
+        resources = repo / "plugin/src/test/resources"
+        with zipfile.ZipFile(dex, "a") as archive:
+            for path in sorted(resources.rglob("*")):
+                if path.is_file():
+                    archive.write(path, path.relative_to(resources))
         remote = run(adb + ["shell", "mktemp", "-d", "/data/local/tmp/linovelib-host-tests.XXXXXX"], capture_output=True, text=True).stdout.strip()
         if not re.fullmatch(r"/data/local/tmp/linovelib-host-tests\.[A-Za-z0-9]+", remote):
             raise RuntimeError(f"Unexpected temporary directory: {remote!r}")

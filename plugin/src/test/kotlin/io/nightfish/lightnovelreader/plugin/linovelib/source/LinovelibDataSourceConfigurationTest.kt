@@ -15,7 +15,6 @@ class LinovelibDataSourceConfigurationTest {
         val host = "https://www.bilinovel.net"
         assertEquals(host, LinovelibUrls.HOST)
         assertEquals("$host/top.html", LinovelibUrls.top(host))
-        assertEquals("$host/topfull/postdate/1.html", LinovelibUrls.complete(host))
         assertEquals("$host/wenku/lastupdate_0_0_0_0_0_0_0_1_0.html", LinovelibUrls.wenku(host, "lastupdate", 1))
         assertEquals("$host/novel/1804.html", LinovelibUrls.book(host, "1804"))
         assertEquals("$host/novel/1804/catalog", LinovelibUrls.catalog(host, "1804"))

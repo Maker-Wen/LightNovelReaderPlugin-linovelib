@@ -8,7 +8,7 @@ internal class LinovelibWenkuFilters(private val host: String) {
     // Values follow the public wenku page's data-filter-type / data-filter-value controls.
     private val region = WenkuChoice("地区", linkedMapOf(
         "不限" to "0", "日本轻小说" to "1", "华文轻小说" to "2", "Web轻小说" to "3",
-        "轻改漫画" to "4", "韩国轻小说" to "5"
+        "韩国轻小说" to "5"
     ))
     private val theme = WenkuChoice("主题", linkedMapOf(
         "不限" to "0", "恋爱" to "64", "后宫" to "48", "校园" to "63", "百合" to "27",
@@ -41,11 +41,17 @@ internal class LinovelibWenkuFilters(private val host: String) {
         "不限" to "0", "新书上传" to "1", "情节展开" to "2", "精彩纷呈" to "3",
         "接近尾声" to "4", "已经完本" to "5"
     ))
+    private val publisher = WenkuChoice("出版社", linkedMapOf(
+        "不限" to "0", "电击文库" to "1", "富士见文库" to "2", "角川文库" to "3",
+        "MF文库J" to "4", "Fami通文库" to "5", "GA文库" to "6", "HJ文库" to "7",
+        "一迅社" to "8", "集英社" to "9", "小学馆" to "10", "讲谈社" to "11",
+        "少女文库" to "12", "其他文库" to "13"
+    ))
 
-    val filters: List<Filter<*>> = listOf(region, theme, order, animation, words, status)
+    val filters: List<Filter<*>> = listOf(region, publisher, theme, order, animation, words, status)
 
     fun url(): String = LinovelibUrls.wenku(
-        host, order.code, 1, theme.code, status.code, animation.code, region.code, words.code
+        host, order.code, 1, theme.code, status.code, animation.code, region.code, words.code, publisher.code
     )
 }
 

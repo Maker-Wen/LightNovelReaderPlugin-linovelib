@@ -18,7 +18,7 @@
 | [LinovelibHttpClient](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHttpClient.kt) | HTML 请求、搜索验证、Cookie、重试和可用性检查 | 一个数据源的 HTTP 会话 |
 | [LinovelibSearchProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchProvider.kt) | 搜索识别、结果事件及宿主对象更新 | 单次搜索已展示的可变书籍对象 |
 | [LinovelibBookDetails](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibBookDetails.kt) | 详情获取、解析与接纳，搜索详情串行补全 | 复用一个源的 MetadataStore，不另存缓存 |
-| [LinovelibExplorePageProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibExplorePageProvider.kt) | 四个栏目、展开页定义登记、创建页面实例 | 源内稳定页面定义，不持有页面会话 |
+| [LinovelibExplorePageProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibExplorePageProvider.kt) | 三个栏目、展开页定义登记、创建页面实例 | 源内稳定页面定义，不持有页面会话 |
 | [LinovelibLinkedExpandedPageDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRelatedSearch.kt) | 筛选、分页、加载更多和取消 | 页面持有筛选与当前通道；一次 Flow 收集持有页码、URL 快照及去重集合 |
 | [LinovelibHtmlParser](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHtmlParser.kt) | HTML 转为 `Parsed*` 数据，包括原始关联链接 | 无跨调用可变状态 |
 | [LinovelibMetadataStore](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibMetadataStore.kt) | 最近成功详情、列表摘要、关联目标 | 一个源实例共享的有界临时数据 |
@@ -32,7 +32,7 @@
 
 已核对的 API 3 宿主调用契约（历史提交 `6ea57a9`）中，每个展开页 ViewModel 从 `exploreExpandedPageDataSourceMap` 取得并保留一个数据源实例。Provider 每次读取该属性时复制定义表，创建一份普通 Map；同一份 Map 内对象稳定，不同读取之间的页面和 Filter 独立。共享页面单例会让多个页面互相修改筛选、页码或加载更多通道，因此共享的只能是页面定义。
 
-- 固定文库、普通更多、排行、完结及关联入口都使用这条创建路径。
+- 固定文库、普通更多、排行及关联入口都使用这条创建路径。
 - 每个文库页面创建自己的 `LinovelibWenkuFilters`。新开页面使用默认筛选，返回旧页面保留旧筛选。
 - 每次收集先保存筛选 URL，页码和去重集合只在本次收集中使用。修改筛选后从第一页重收集。
 - 当前加载通道的发布、读取与身份比较清理共用短锁。发布前检查取消状态，旧任务的清理不会清空新通道；请求和结果发送在锁外执行。
@@ -69,18 +69,20 @@ Parser 返回原始作者、作者 URL、标签和出版社链接，不生成作
 
 搜索与展开页把有效空列表和未识别页面分别映射为已有的 Empty 与 Error 结果。搜索在单次 Flow 收集中顺序请求下一页，逐页按网页顺序追加摘要，保留跨页重复条目；没有下一页时结束列表抓取，不设置固定页数上限。HTTP 200 空响应和未识别页面作为失败报告，保留已经发出的书籍，随后发出 Error 与 End；取消直接传播。分页地址、累计条目和宿主可变对象均属于当前收集过程，重新搜索不复用这些状态。
 
-展开页仍使用第一页的末页信息；分页 URL、筛选、跨页去重和加载更多属于页面会话，空的中间页可继续向后扫描。文库和完结栏目将有效空列表或未识别页面投影为空展示行，继续保留栏目标题与展开入口。
+展开页仍使用第一页的末页信息；分页 URL、筛选、跨页去重和加载更多属于页面会话，空的中间页可继续向后扫描。文库栏目将有效空列表或未识别页面投影为空展示行，继续保留栏目标题与展开入口。
 
-错误分类保留到宿主入口再适配：详情失败依次使用成功详情、列表摘要和空对象；目录与正文失败返回各自空对象；搜索和展开页发出已有的 `SearchResult.Error`、`Empty`、`End`。历史官方宿主 `6ea57a9` 的 `ExpandedPageViewModel` 只处理书籍结果，忽略这些状态事件，因此插件正确发出事件也不代表界面具备相应错误、空结果或结束展示。当前重构沿用这些接口边界，未新增宿主页面；其他宿主版本的展示能力需单独核对。
+错误分类保留到宿主入口再适配：详情失败依次使用成功详情、列表摘要和空对象；目录与正文失败返回各自空对象；搜索和展开页发出已有的 `SearchResult.Error`、`Empty`、`End`。历史官方宿主 `6ea57a9` 的 `ExpandedPageViewModel` 只处理书籍结果，忽略这些状态事件。2026-10-28 核对的官方 `1.2.4 / 10204004` 也保留这一处理方式，并直接用书目为空作为进度条显示条件，因此有效空结果结束后仍会显示加载条。当前重构沿用这些接口边界，保留该宿主展示行为；其他宿主版本的展示能力需单独核对。
 
-探索解析保留 HTML 中全部有效行与书籍，按原顺序过滤无效项并在每行内按书籍 ID 去重。首页四个栏目由 ExplorePageProvider 限制展示：推荐、排行取前 8 个有效行，每行最多 12 本；文库、完结各展示一行，每行最多 12 本。只将实际返回给宿主的书目摘要写入 MetadataStore，一次展示转换中每个位置只写一次；隐藏书目不新增、覆盖或刷新摘要，隐藏行也不登记展开页。否则大量未展示书目会占用有界存储并淘汰用户刚看到的摘要。
+探索解析保留 HTML 中全部有效行与书籍，按原顺序过滤无效项并在每行内按书籍 ID 去重。ExplorePageProvider 沿用宿主默认布局，按推荐、排行、文库注册三个栏目：推荐只选勇者新推、新书抢鲜、人气完本三组，保留各组完整书目和来源顺序；排行保留全部有效行及完整书目，不重排榜单；文库展示一行，最多 12 本预览。独立完结栏目已取消，推荐的人气完本和排行的完本榜继续保留。只将实际返回给宿主的书目摘要写入 MetadataStore，一次展示转换中每个位置只写一次；未展示的行和书目不记录摘要，未展示的行也不登记展开页。
+
+文库展开页依次提供地区、出版社、主题、排序、动画、字数和状态七项单选筛选，出版社位于地区之后。地区只提供“不限”、日本轻小说、华文轻小说、Web 轻小说、韩国轻小说，保留站点原有编码 `0 / 1 / 2 / 3 / 5`；不提供轻改漫画选项。出版社使用站点真实 `sortid` 编码，提供 13 项及“不限”，与其他条件共同生成筛选 URL，不自动修改地区；切换条件仍复用既有的第一页重载与分页会话。主题保留 61 项，弹窗显示范围由宿主处理，已知限制见 [README](../README.md#已知限制)。
 
 MetadataStore 的三个索引各保留最多 256 项：成功详情按书籍 ID、列表摘要按书籍 ID、关联目标按展示文本。按最近写入顺序淘汰；重写旧键会更新顺序，读取不会延长保留。操作使用短同步方法，不在锁内执行 I/O；不设 TTL，不存宿主可变书籍对象，也不持久化。它只帮助详情回退与关联导航，丢失或淘汰后必须仍能走正常请求或回退路径。
 
 | 调用路径 | 元数据行为 |
 | --- | --- |
 | 普通详情、带详情的 ID 直达与搜索重定向、搜索补全 | 标题非空才记录详情和有效关联目标；无效详情不覆盖旧值 |
-| 首页四个栏目 | 先限制展示行和每行书籍数量，再记录实际返回给宿主的展示摘要 |
+| 探索三个栏目 | 推荐选择三组、排行保留全量、文库截取预览后，只记录实际返回给宿主的展示摘要 |
 | 搜索列表、展开分页 | 沿用已解析有效摘要的记录规则；展开页结果去重不影响摘要记录 |
 | 仅检索 ID 的直达与重定向 | 返回 ID，保留轻量路径，不额外抓取详情 |
 | 普通详情失败或解析无效 | 依次尝试成功详情、列表摘要、宿主空对象 |
@@ -100,7 +102,7 @@ WebDataSource 装配同一个 BookDetails 和 MetadataStore 供普通详情与�
 - 未知日期转成 `LocalDateTime.MIN`，由宿主显示为 `-`；真实日期使用当天零点。
 - 当前出版社只写入 `publishingHouse` 字段，关联 URL 保存在元数据中，没有加入可点击的 `tags`。官方 `1.2.3c` 的 `DetailScreen` 对原生出版社使用空点击回调；2026-10-18 模拟器确认点击不跳转，本轮保持现状，见 [README 已知限制](../README.md#已知限制)。
 
-宿主 Cache 与 MetadataStore 各自独立：前者配置为每类 256 项、6 小时，后者按每个索引最多 256 项、最近写入顺序淘汰。首页单次推荐或排行展示最多 96 个书目位置；后续搜索、分页或其他栏目写入仍可淘汰旧摘要，不保证当前页面的摘要长期保留。配置入口是 [LinovelibDataSourceConfiguration](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibDataSourceConfiguration.kt)，不能把两个存储的时效语义混为一谈。
+宿主 Cache 与 MetadataStore 各自独立：前者配置为每类 256 项、6 小时，后者按每个索引最多 256 项、最近写入顺序淘汰。后续搜索、分页或其他栏目写入仍可淘汰旧摘要，不保证当前页面的摘要长期保留。配置入口是 [LinovelibDataSourceConfiguration](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibDataSourceConfiguration.kt)，不能把两个存储的时效语义混为一谈。
 
 ## 迁入会话
 

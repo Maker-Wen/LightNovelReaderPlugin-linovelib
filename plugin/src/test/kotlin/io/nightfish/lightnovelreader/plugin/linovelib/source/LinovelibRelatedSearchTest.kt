@@ -240,7 +240,7 @@ class LinovelibRelatedSearchTest {
         val host = LinovelibUrls.HOST
         val filterSet = LinovelibWenkuFilters(host)
         val choices = filterSet.filters.map { it as SingleChoiceFilter }
-        choices.zip(listOf("韩国轻小说", "恋爱", "收藏数", "未动画化", "50-100万", "接近尾声"))
+        choices.zip(listOf("韩国轻小说", "不限", "恋爱", "收藏数", "未动画化", "50-100万", "接近尾声"))
             .forEach { (filter, value) -> filter.value = value }
         // Verified by applying these controls on the public wenku page.
         val expected = "$host/wenku/goodnum_64_4_2_5_0_0_3_1_0.html"
@@ -264,7 +264,7 @@ class LinovelibRelatedSearchTest {
             page.loadMore()
             first.await()
         }
-        choices[5].value = "已经完本"
+        choices[6].value = "已经完本"
         withTimeout(1_000) {
             val refreshed = async { page.getResultFlow().toList() }
             while (requested.size < 3) yield()
@@ -480,9 +480,9 @@ class LinovelibRelatedSearchTest {
         ).also(metadata::rememberBook)
         val provider = LinovelibExplorePageProvider({ "" }, parser, { flowOf(SearchResult.End()) }, metadata = metadata)
 
-        assertEquals(listOf("推荐", "文库", "排行", "完结"),
+        assertEquals(listOf("推荐", "排行", "文库"),
             provider.explorePageIdList.map { provider.exploreTapPageDataSourceMap.getValue(it).title })
-        assertEquals(6, provider.exploreExpandedPageDataSourceMap
+        assertEquals(7, provider.exploreExpandedPageDataSourceMap
             .getValue(LinovelibExplorePageProvider.WENKU_PAGE_ID).filters.size)
 
         val pageId = provider.registerRelatedPage("  \u79d1\u5e7b  ")

@@ -8,8 +8,6 @@ internal object LinovelibUrls {
 
     fun top(host: String): String = "$host/top.html"
 
-    fun complete(host: String): String = "$host/topfull/postdate/1.html"
-
     fun wenku(host: String, order: String, page: Int): String =
         wenku(host, order, page, "0", "0", "0", "0", "0")
 
@@ -21,8 +19,9 @@ internal object LinovelibUrls {
         status: String,
         animation: String,
         region: String,
-        words: String
-    ): String = "$host/wenku/${order}_${theme}_${status}_${animation}_${region}_0_0_${words}_${page}_0.html"
+        words: String,
+        publisher: String = "0"
+    ): String = "$host/wenku/${order}_${theme}_${status}_${animation}_${region}_${publisher}_0_${words}_${page}_0.html"
 
     internal fun listPage(targetUrl: String, page: Int): String? {
         if (page == 1) return targetUrl

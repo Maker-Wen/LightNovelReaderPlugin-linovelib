@@ -185,17 +185,35 @@ internal class LinovelibHtmlParser(
     fun parseExploreRows(html: String): List<ParsedExploreRow> {
         val document = Jsoup.parse(html, host)
         return document.select(".module")
-            .mapNotNull { module ->
-                val title = module.selectFirst(".module-title")?.text()?.trim().orEmpty()
-                val books = module
-                    .select("a.module-slide-a[href], a.book-layout[href]")
-                    .mapNotNull(::parseExploreBook)
-                    .distinctBy { it.id }
-                if (title.isEmpty() || books.isEmpty()) null else ParsedExploreRow(
-                    title,
-                    books,
-                    expandedListUrl(module, ".module-header a.module-header-btn[href]")
+            .flatMap { module ->
+                val rankingTabs = module.selectFirst(".module-tab.rank")
+                val wenkuTabs = module.select(
+                    ".module-tab.sort, .module-tab.sort1, .module-tab.sort2, .module-tab.sort3"
                 )
+                val sections = when {
+                    rankingTabs != null -> rankingTabs.select(".btn-tab")
+                        .zip(module.select(".module-slide.rank > .module-slide-ol"))
+                    wenkuTabs.isNotEmpty() -> wenkuTabs.flatMap { tabs ->
+                        tabs.select(".btn-tab")
+                            .zip(tabs.nextElementSibling()!!.select(".module-slide-ol"))
+                    }
+                    else -> listOf(module.selectFirst(".module-title") to module)
+                }
+                sections.mapNotNull { (heading, content) ->
+                    val title = heading?.text()?.trim().orEmpty()
+                    val books = content
+                        .select("a.module-slide-a[href], a.book-layout[href]")
+                        .mapNotNull(::parseExploreBook)
+                        .distinctBy { it.id }
+                    if (title.isEmpty() || books.isEmpty()) null else ParsedExploreRow(
+                        title,
+                        books,
+                        // Rankings share one More link; the wenku /sort/ link is a category index.
+                        if (rankingTabs == null || heading?.hasClass("active") == true) {
+                            expandedListUrl(module, ".module-header a.module-header-btn[href]")
+                        } else null
+                    )
+                }
             }
     }
 

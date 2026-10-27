@@ -36,29 +36,24 @@ internal class LinovelibExplorePageProvider(
         val wenkuUrl = LinovelibUrls.wenku(host, "lastupdate", 1)
         registerExpandedPageDefinition(WENKU_PAGE_ID, ExpandedPageDefinition("文库", wenkuUrl))
         registerTapPage(LinovelibRowsExploreTapPage("推荐") {
-            displayRows(parser.parseExploreRows(htmlLoader(host)))
-        })
-        registerTapPage(LinovelibRowsExploreTapPage("文库") {
-            val row = ParsedExploreRow("全部轻小说", parser.parseListPage(htmlLoader(wenkuUrl))?.books.orEmpty())
-            listOf(displayRow(row, WENKU_PAGE_ID))
+            val rows = parser.parseExploreRows(htmlLoader(host))
+            listOf("勇者新推", "新书抢鲜", "人气完本")
+                .mapNotNull { title -> rows.firstOrNull { it.title == title } }
+                .map { displayRow(it) }
         })
         registerTapPage(LinovelibRowsExploreTapPage("排行") {
-            displayRows(parser.parseRankingRows(htmlLoader(LinovelibUrls.top(host))))
+            parser.parseRankingRows(htmlLoader(LinovelibUrls.top(host))).map { displayRow(it) }
         })
-        registerTapPage(LinovelibRowsExploreTapPage("完结") {
-            val url = LinovelibUrls.complete(host)
-            val row = ParsedExploreRow("完结轻小说", parser.parseListPage(htmlLoader(url))?.books.orEmpty(), expandedUrl = url)
-            listOf(displayRow(row))
+        registerTapPage(LinovelibRowsExploreTapPage("文库") {
+            val books = parser.parseListPage(htmlLoader(wenkuUrl))?.books.orEmpty()
+                .take(MAX_WENKU_PREVIEW_BOOKS)
+            val row = ParsedExploreRow("全部轻小说", books)
+            listOf(displayRow(row, WENKU_PAGE_ID))
         })
     }
 
-    private fun displayRows(rows: List<ParsedExploreRow>): List<ExploreBooksRow> =
-        rows.take(MAX_EXPLORE_ROWS).map { displayRow(it) }
-
     private fun displayRow(row: ParsedExploreRow, fixedExpandedPageId: String? = null): ExploreBooksRow {
-        // The same projection supplies metadata and host rows; hidden books never refresh the store.
-        val displayedBooks = row.books.take(MAX_BOOKS_PER_ROW)
-        metadata.rememberBooks(displayedBooks)
+        metadata.rememberBooks(row.books)
         val pageId = fixedExpandedPageId ?: row.expandedUrl?.let { url ->
             "linovelib-list-${url.removePrefix(host)}".also { id ->
                 registerExpandedPageDefinition(id, ExpandedPageDefinition(row.title, url))
@@ -68,7 +63,7 @@ internal class LinovelibExplorePageProvider(
             title = row.title,
             expandable = pageId != null,
             expandedPageDataSourceId = pageId,
-            bookList = displayedBooks.map { book ->
+            bookList = row.books.map { book ->
                 ExploreDisplayBook(
                     id = book.id,
                     title = book.title,
@@ -126,8 +121,7 @@ internal class LinovelibExplorePageProvider(
     }
 
     companion object {
-        private const val MAX_EXPLORE_ROWS = 8
-        private const val MAX_BOOKS_PER_ROW = 12
+        private const val MAX_WENKU_PREVIEW_BOOKS = 12
         const val RELATED_PAGE_ID = "linovelib-related"
         const val WENKU_PAGE_ID = "linovelib-wenku"
     }
