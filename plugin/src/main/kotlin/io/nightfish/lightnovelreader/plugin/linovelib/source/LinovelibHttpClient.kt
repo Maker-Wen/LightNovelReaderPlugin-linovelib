@@ -52,11 +52,20 @@ internal class LinovelibHttpClient(
         url = url,
         userAgent = LINOVELIB_CONTENT_USER_AGENT,
         referrer = "${host}/",
-        cookies = mapOf("night" to "0"),
+        cookies = { mapOf("night" to "0") },
         cacheControl = true
     ).let { LinovelibHtmlResponse(it.raw.url().toString(), it.html) }
 
-    suspend fun search(keyword: String): LinovelibHtmlResponse {
+    suspend fun search(url: String): LinovelibHtmlResponse = executeRequest(
+        url = url,
+        userAgent = LINOVELIB_CONTENT_USER_AGENT,
+        referrer = "${host}/",
+        cookies = { mapOf("jieqiSearchTicket" to redeemSearchTicket(url)) },
+        cacheControl = true,
+        includeSessionCookies = false
+    ).let { LinovelibHtmlResponse(it.raw.url().toString(), it.html) }
+
+    private suspend fun redeemSearchTicket(url: String): String {
         val guardJs = executeRequest(
             url = "${host}/search.html?search_guard=js",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
@@ -81,7 +90,7 @@ internal class LinovelibHttpClient(
             url = "${host}/search.html?search_guard=redeem&r=${System.currentTimeMillis()}",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            cookies = LinovelibSearchGuard.guardCookies(jsToken, cssToken),
+            cookies = { LinovelibSearchGuard.guardCookies(jsToken, cssToken) },
             cacheControl = true,
             includeSessionCookies = false
         )
@@ -89,29 +98,17 @@ internal class LinovelibHttpClient(
         require(ticketToken.isNotEmpty()) { "Missing jieqiSearchTicket search cookie" }
         diagnostics.info(
             "SEARCH_GUARD_OK",
-            mapOf("keyword" to keyword)
+            mapOf("url" to url)
         )
 
-        val encodedKeyword = java.net.URLEncoder.encode(keyword, "UTF-8")
-        val response = executeRequest(
-            url = "${host}/search.html?searchkey=$encodedKeyword",
-            userAgent = LINOVELIB_CONTENT_USER_AGENT,
-            referrer = "${host}/",
-            cookies = mapOf("jieqiSearchTicket" to ticketToken),
-            cacheControl = true,
-            includeSessionCookies = false
-        )
-        return LinovelibHtmlResponse(
-            finalUrl = response.raw.url().toString(),
-            html = response.html
-        )
+        return ticketToken
     }
 
     private suspend fun executeRequest(
         url: String,
         userAgent: String,
         referrer: String,
-        cookies: Map<String, String> = emptyMap(),
+        cookies: suspend () -> Map<String, String> = { emptyMap() },
         cacheControl: Boolean = false,
         includeSessionCookies: Boolean = true,
         availabilityCheck: Boolean = false
@@ -120,12 +117,15 @@ internal class LinovelibHttpClient(
         try {
             var attempt = 0
             while (true) {
+                // Search tickets are consumed by the server, including failed result attempts.
+                // Acquire cookies outside the request slot and repeat this for every retry.
+                val requestCookies = cookies()
                 val response = try {
                     executeSingleRequest(
                         url = url,
                         userAgent = userAgent,
                         referrer = referrer,
-                        cookies = cookies,
+                        cookies = requestCookies,
                         cacheControl = cacheControl,
                         includeSessionCookies = includeSessionCookies,
                         attempt = attempt,

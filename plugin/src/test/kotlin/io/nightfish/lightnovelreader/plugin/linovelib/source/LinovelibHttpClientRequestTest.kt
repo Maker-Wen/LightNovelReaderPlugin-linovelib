@@ -1,5 +1,7 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
+import io.nightfish.lightnovelreader.api.web.search.SearchResult
+import kotlinx.coroutines.flow.toList
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -13,6 +15,56 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 class LinovelibHttpClientRequestTest {
+    @Test
+    fun `each search page and retried result request redeem a new one use ticket`() = runBlocking {
+        val guards = AtomicInteger()
+        val pageTwoAttempts = AtomicInteger()
+        val usedTickets = mutableSetOf<String>()
+        LinovelibHttpTestSite { exchange ->
+            val query = exchange.requestURI.rawQuery.orEmpty()
+            when {
+                query == "search_guard=js" -> {
+                    val guard = guards.incrementAndGet()
+                    exchange.respond(200, "document.cookie=\"jieqiSearchJs=js-$guard; path=/\";", "application/javascript")
+                }
+                query == "search_guard=css" -> {
+                    exchange.responseHeaders.add("Set-Cookie", "jieqiSearchCss=css-${guards.get()}; Path=/")
+                    exchange.respond(200, "body{}", "text/css")
+                }
+                query.startsWith("search_guard=redeem&r=") -> {
+                    exchange.responseHeaders.add("Set-Cookie", "jieqiSearchTicket=ticket-${guards.get()}; Path=/")
+                    exchange.respond(200)
+                }
+                else -> {
+                    val ticket = exchange.requestHeaders.getFirst("Cookie").orEmpty()
+                    when {
+                        !usedTickets.add(ticket) -> exchange.respond(200, "")
+                        query.startsWith("searchkey=") -> exchange.respond(200, searchPage(listOf("1"), "/search/Book_2.html"))
+                        pageTwoAttempts.incrementAndGet() == 1 -> exchange.respond(500)
+                        else -> exchange.respond(200, searchPage(listOf("2"), "#"))
+                    }
+                }
+            }
+        }.use { site ->
+            val client = site.client()
+            val provider = testSearchProvider(
+                htmlLoader = { error("ID search must not fetch details") },
+                searchHtmlLoader = client::search,
+                parser = LinovelibHtmlParser(site.host), host = site.host
+            )
+
+            val results = provider.searchBookIds("Book").toList()
+
+            assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+            assertTrue(results.none { it is SearchResult.Error })
+            assertTrue(results.last() is SearchResult.End)
+            assertEquals(3, guards.get())
+            val resultRequests = site.requests.filter { it.query?.startsWith("search_guard=") != true }
+            assertEquals(listOf("ticket-1", "ticket-2", "ticket-3"), resultRequests.map { it.cookies["jieqiSearchTicket"] })
+            assertEquals(listOf("/search.html", "/search/Book_2.html", "/search/Book_2.html"), resultRequests.map { it.path })
+        }
+    }
+
     @Test
     fun successfulResponsesIgnoreRetryAfterWithoutDelayingTheNextRequest() = runBlocking {
         for (status in listOf(200, 302)) {
@@ -136,7 +188,7 @@ class LinovelibHttpClientRequestTest {
             val client = site.client()
             client.loadHtml("${site.host}/seed")
             repeat(2) { attempt ->
-                val result = client.search("川原 礫&+")
+                val result = client.search(LinovelibUrls.search(site.host, "川原 礫&+"))
                 assertEquals("${site.host}/novel/100.html", result.finalUrl)
                 assertEquals("<h1 class=book-title>Book</h1>", result.html)
                 val requests = site.requests.drop(1 + attempt * 5).take(5)
@@ -273,7 +325,7 @@ class LinovelibHttpClientRequestTest {
                 exchange.respond(200, if (stage == 1 && stage < missingStage) "jieqiSearchJs=js" else "Missing guard")
             }.use { site ->
                 val client = site.client()
-                assertTrue(runCatching { client.search("Book") }.exceptionOrNull() is IllegalArgumentException)
+                assertTrue(runCatching { client.search(LinovelibUrls.search(site.host, "Book")) }.exceptionOrNull() is IllegalArgumentException)
                 assertEquals(missingStage, site.requests.size)
                 assertFalse(client.isOffLineFlow.value)
             }

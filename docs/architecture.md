@@ -17,7 +17,7 @@
 | [LinovelibWebDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibWebDataSource.kt) | 装配组件，适配宿主接口，编排正文加载 | 数据源实例的宿主 Cache、加载检查任务 |
 | [LinovelibHttpClient](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHttpClient.kt) | HTML 请求、搜索验证、Cookie、重试和可用性检查 | 一个数据源的 HTTP 会话 |
 | [LinovelibSearchProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibSearchProvider.kt) | 搜索识别、结果事件及宿主对象更新 | 单次搜索已展示的可变书籍对象 |
-| [LinovelibBookDetails](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibBookDetails.kt) | 详情获取、解析与接纳，搜索首批及串行补全 | 复用一个源的 MetadataStore，不另存缓存 |
+| [LinovelibBookDetails](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibBookDetails.kt) | 详情获取、解析与接纳，搜索详情串行补全 | 复用一个源的 MetadataStore，不另存缓存 |
 | [LinovelibExplorePageProvider](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibExplorePageProvider.kt) | 四个栏目、展开页定义登记、创建页面实例 | 源内稳定页面定义，不持有页面会话 |
 | [LinovelibLinkedExpandedPageDataSource](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRelatedSearch.kt) | 筛选、分页、加载更多和取消 | 页面持有筛选与当前通道；一次 Flow 收集持有页码、URL 快照及去重集合 |
 | [LinovelibHtmlParser](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibHtmlParser.kt) | HTML 转为 `Parsed*` 数据，包括原始关联链接 | 无跨调用可变状态 |
@@ -46,11 +46,11 @@ Map getter 的成本是 O(已登记定义数)，只创建轻量对象，不启�
 
 ## HTTP 会话与离线状态
 
-`LinovelibHttpClient` 对外提供 `loadHtml`、`loadChapterPage`、`search`、`checkOffline` 和只读 `isOffLineFlow`。章节与搜索返回最终 URL 和 HTML；搜索直达书籍与重定向识别保留在 `LinovelibSearchResponse`，列表页识别由 Parser 统一处理。
+`LinovelibHttpClient` 对外提供 `loadHtml`、`loadChapterPage`、`search`、`checkOffline` 和只读 `isOffLineFlow`。`search(url)` 接收由搜索提供器生成或从网页解析的页面地址。章节与搜索返回最终 URL 和 HTML；搜索直达书籍与重定向识别保留在 `LinovelibSearchProvider`，列表页识别由 Parser 统一处理。
 
 [RequestPolicy](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRequestPolicy.kt) 定义重试和退避，[RequestCoordinator](../plugin/src/main/kotlin/io/nightfish/lightnovelreader/plugin/linovelib/source/LinovelibRequestCoordinator.kt) 负责串行请求、间隔、冷却和取消释放。协调单位是一次 HTTP 请求尝试；普通请求的 Cookie 合并、连接执行与写回都在该执行区间内，避免并发请求丢失或覆盖会话 Cookie。
 
-搜索保留 JS、CSS、ticket 兑换、结果请求四步验证，每一步只使用该验证流程明确提供的 Cookie，不读取或写回普通会话 Cookie。不能以统一 Cookie 管理为由移除这一边界，也不能把四步流程误写成一个整体串行事务。
+搜索的每个列表页均执行 JS、CSS、ticket 兑换、结果请求四步验证。票据只能使用一次，结果请求因 HTTP 状态或传输中断而重试时，也要重新执行前三步取票。每一步只使用该验证流程明确提供的 Cookie，不读取或写回普通会话 Cookie。不能以统一 Cookie 管理为由移除这一边界，也不能把四步流程误写成一个整体串行事务。
 
 | 请求结果 | 当前操作 | 全源离线状态 |
 | --- | --- | --- |
@@ -65,9 +65,11 @@ Map getter 的成本是 O(已登记定义数)，只创建轻量对象，不启�
 
 Parser 返回原始作者、作者 URL、标签和出版社链接，不生成作者展示标签，也不隐式写缓存。相同输入的解析不应因先前请求或页面展示而改变；显示限额和元数据写入由调用方决定，不能放进 Parser。正文选择器、段落还原、日期解析和目录算法保持独立。
 
-列表页由 `parseListPage(html)` 一次解析同一份 DOM，返回 `ParsedListPage?`，包含完整书目摘要和末页。按书籍 ID 保留第一条有效摘要，顺序与网页一致；没有有效书目时，只有明确为空的列表才返回空书目，验证页、未知页面和损坏书目候选返回 `null`。书目、空列表及末页共用这一识别入口，避免调用方分别判断而将验证页误报成空结果。
+列表页由 `parseListPage(html)` 一次解析同一份 DOM，返回 `ParsedListPage?`，包含完整书目摘要、末页和下一页链接。下一页取 `#pagelink a.next` 的实际地址，`href="#"` 或没有该链接表示结束。按书籍 ID 保留第一条有效摘要，顺序与网页一致；没有有效书目时，只有明确为空的列表才返回空书目，验证页、未知页面和损坏书目候选返回 `null`。书目、空列表及末页共用这一识别入口，避免调用方分别判断而将验证页误报成空结果。
 
-搜索与展开页把有效空列表和未识别页面分别映射为已有的 Empty 与 Error 结果。展开页仍使用第一页的末页信息；分页 URL、筛选、跨页去重和加载更多属于页面会话，空的中间页可继续向后扫描。文库和完结栏目将有效空列表或未识别页面投影为空展示行，继续保留栏目标题与展开入口。
+搜索与展开页把有效空列表和未识别页面分别映射为已有的 Empty 与 Error 结果。搜索在单次 Flow 收集中顺序请求下一页，逐页按网页顺序追加摘要，保留跨页重复条目；没有下一页时结束列表抓取，不设置固定页数上限。HTTP 200 空响应和未识别页面作为失败报告，保留已经发出的书籍，随后发出 Error 与 End；取消直接传播。分页地址、累计条目和宿主可变对象均属于当前收集过程，重新搜索不复用这些状态。
+
+展开页仍使用第一页的末页信息；分页 URL、筛选、跨页去重和加载更多属于页面会话，空的中间页可继续向后扫描。文库和完结栏目将有效空列表或未识别页面投影为空展示行，继续保留栏目标题与展开入口。
 
 错误分类保留到宿主入口再适配：详情失败依次使用成功详情、列表摘要和空对象；目录与正文失败返回各自空对象；搜索和展开页发出已有的 `SearchResult.Error`、`Empty`、`End`。历史官方宿主 `6ea57a9` 的 `ExpandedPageViewModel` 只处理书籍结果，忽略这些状态事件，因此插件正确发出事件也不代表界面具备相应错误、空结果或结束展示。当前重构沿用这些接口边界，未新增宿主页面；其他宿主版本的展示能力需单独核对。
 
@@ -79,14 +81,14 @@ MetadataStore 的三个索引各保留最多 256 项：成功详情按书籍 ID�
 | --- | --- |
 | 普通详情、带详情的 ID 直达与搜索重定向、搜索补全 | 标题非空才记录详情和有效关联目标；无效详情不覆盖旧值 |
 | 首页四个栏目 | 先限制展示行和每行书籍数量，再记录实际返回给宿主的展示摘要 |
-| 搜索列表、展开分页 | 沿用已解析有效摘要的记录规则；分页结果去重不影响摘要记录 |
+| 搜索列表、展开分页 | 沿用已解析有效摘要的记录规则；展开页结果去重不影响摘要记录 |
 | 仅检索 ID 的直达与重定向 | 返回 ID，保留轻量路径，不额外抓取详情 |
 | 普通详情失败或解析无效 | 依次尝试成功详情、列表摘要、宿主空对象 |
 | 关联索引缺失 | 已登记定义保留原 URL；首次登记且无已知目标时回退到关键词搜索 |
 
-`LinovelibBookDetails` 统一详情获取与接纳：`fetch(id)` 始终获取实时 HTML 并复用 `acceptHtml(id, html)`；后者只解析已有响应，标题非空才接纳详情与关联目标。`enrich(books)` 先发完全部首批数据，再按顺序逐本实时补全。搜索首批取成功详情或本次列表摘要，不使用 Store 中的旧摘要替换本次摘要；命中成功详情也不跳过实时补全，避免辅助存储变成新的详情缓存策略。
+`LinovelibBookDetails` 统一详情获取与接纳：`fetch(id)` 始终获取实时 HTML 并复用 `acceptHtml(id, html)`；后者只解析已有响应，标题非空才接纳详情与关联目标。`SearchProvider` 逐页发出摘要，全部列表页完成后调用 `enrich(books)` 按顺序逐本实时补全，避免详情请求阻塞下一页。搜索摘要取成功详情或本次列表摘要，不使用 Store 中的旧摘要替换本次摘要；命中成功详情也不跳过实时补全，避免辅助存储变成新的详情缓存策略。
 
-`fetch` 与 `acceptHtml` 对无效页面返回空结果，异常原样传播；普通详情、ID 直达和重定向的宿主转换仍在各自异常处理内，分别保留详情回退或 SingleBook 退路。`enrich` 只处理逐本获取失败，继续后续书籍；取消和收集方异常向上传播。ID-only 路径不调用详情操作；SearchProvider 对同一搜索结果只发出一次书籍事件，详情补全更新已经展示的同一个 `MutableBookInformation`，避免重复追加结果。
+`fetch` 与 `acceptHtml` 对无效页面返回空结果，异常原样传播；普通详情、ID 直达和重定向的宿主转换仍在各自异常处理内，分别保留详情回退或 SingleBook 退路。`enrich` 只处理逐本获取失败，继续后续书籍；取消和收集方异常向上传播。ID-only 路径不调用详情操作；SearchProvider 对每个列表条目发出一次书籍事件；同 ID 的跨页条目分别追加，详情补全更新该 ID 已展示的所有 `MutableBookInformation`，不再发出书籍事件。
 
 WebDataSource 装配同一个 BookDetails 和 MetadataStore 供普通详情与搜索使用。内部装配可替换详情 HTML 加载函数，以固定页面验证宿主入口；生产仍使用数据源自己的 HTTP 会话。不要为复用详情逻辑顺带增加重试、并发、请求合并或缓存规则。
 

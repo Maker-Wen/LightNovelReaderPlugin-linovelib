@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicInteger
 
 class LinovelibBookDetailsTest {
     @Test
-    fun `cached details display immediately but still refresh and register new targets`() = runBlocking {
+    fun `cached details still refresh and register new targets`() = runBlocking {
         val metadata = LinovelibMetadataStore()
         val parser = LinovelibHtmlParser()
         metadata.rememberBook(parser.parseBookInformation("1", bookHtml("old", "2026-01-01")))
@@ -26,10 +26,9 @@ class LinovelibBookDetailsTest {
         )
         val results = mutableListOf<ParsedBookInformation>()
         details.enrich(listOf(ParsedExploreBook("1", "List title", "", ""))).collect {
-            if (results.isEmpty()) assertTrue(requested.isEmpty())
             results += it
         }
-        assertEquals(listOf("Book old", "Book new"), results.map { it.title })
+        assertEquals(listOf("Book new"), results.map { it.title })
         assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), requested)
         assertEquals("Book new", metadata.bookInformation("1")?.title)
         assertEquals("${LinovelibUrls.HOST}/author/new.html", metadata.relatedTarget("作者：Author new"))
@@ -43,14 +42,14 @@ class LinovelibBookDetailsTest {
         metadata.rememberBook(known)
         val books = listOf(ParsedExploreBook("1", "List title", "", ""))
         val invalid = LinovelibBookDetails({ "<html>Verification required</html>" }, parser, silentDiagnostics(), metadata = metadata)
-        assertEquals(listOf(known), invalid.enrich(books).toList())
+        assertTrue(invalid.enrich(books).toList().isEmpty())
         val cancelled = LinovelibBookDetails({ throw kotlinx.coroutines.CancellationException("Cancelled") }, parser, silentDiagnostics(), metadata = metadata)
         val emitted = mutableListOf<ParsedBookInformation>()
         try {
             cancelled.enrich(books).collect { emitted += it }
             error("Cancellation must propagate")
         } catch (_: kotlinx.coroutines.CancellationException) {
-            assertEquals(listOf(known), emitted)
+            assertTrue(emitted.isEmpty())
             assertEquals(known, metadata.bookInformation("1"))
             assertNull(metadata.bookInformation("2"))
         }
@@ -74,8 +73,7 @@ class LinovelibBookDetailsTest {
         ).toList()
 
         assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "101")), requestedUrls)
-        assertEquals(2, result.size)
-        assertEquals("Search title", result.first().title)
+        assertEquals(1, result.size)
         assertEquals("101", result.last().id)
         assertEquals(LocalDate.of(2026, 6, 30), result.last().lastUpdated)
         assertEquals(123_000, result.last().wordCount)
@@ -102,12 +100,12 @@ class LinovelibBookDetailsTest {
 
         val result = details.enrich(books).toList()
 
-        assertEquals(18, result.size)
+        assertEquals(9, result.size)
         assertEquals(1, maximumActive.get())
     }
 
     @Test
-    fun `emits all search rows before requests and retains failed or undated details`() = runBlocking {
+    fun `detail refresh skips failed requests and accepts undated details`() = runBlocking {
         val requestedUrls = mutableListOf<String>()
         val details = LinovelibBookDetails(
             htmlLoader = { url ->
@@ -127,18 +125,15 @@ class LinovelibBookDetailsTest {
                 ParsedExploreBook("405", "Retained title", "Retained author", "https://example.com/cover.jpg")
             )
         ).collect { book ->
-            if (emitted < 2) assertTrue(requestedUrls.isEmpty())
             result[book.id] = book
             emitted++
         }
 
-        assertEquals(3, emitted)
-        assertEquals(listOf("404", "405"), result.keys.toList())
+        assertEquals(1, emitted)
+        assertEquals(listOf("404"), result.keys.toList())
+        assertEquals(2, requestedUrls.size)
         assertEquals("Book 404", result.getValue("404").title)
         assertEquals(LinovelibDates.unknownLocalDate, result.getValue("404").lastUpdated)
-        assertEquals("Retained title", result.getValue("405").title)
-        assertEquals("Retained author", result.getValue("405").author)
-        assertEquals("https://example.com/cover.jpg", result.getValue("405").coverUrl)
     }
 
     @Test
@@ -193,26 +188,6 @@ class LinovelibBookDetailsTest {
     }
 
     @Test
-    fun `search initial results use the current summary instead of a stored old summary`() = runBlocking {
-        val metadata = LinovelibMetadataStore()
-        metadata.rememberBooks(listOf(ParsedExploreBook("1", "Old summary", "", "")))
-        val events = mutableListOf<String>()
-        val requested = mutableListOf<String>()
-        val details = LinovelibBookDetails({ url ->
-            requested += url
-            if (url.endsWith("1.html")) error("First detail unavailable")
-            bookHtml("fresh", "2026-10-14")
-        }, LinovelibHtmlParser(), LinovelibDiagnostics { _, _, message, _ -> events += message }, metadata = metadata)
-        val result = details.enrich(listOf(
-            ParsedExploreBook("1", "Current summary", "", ""),
-            ParsedExploreBook("2", "Second summary", "", "")
-        )).toList()
-        assertEquals(listOf("Current summary", "Second summary", "Book fresh"), result.map { it.title })
-        assertEquals(2, requested.size)
-        assertTrue(events.single().startsWith("SEARCH_DETAIL_ERROR "))
-    }
-
-    @Test
     fun `enrichment cancellation or collector failure cannot be swallowed as detail failures`() = runBlocking {
         val books = (1..2).map { ParsedExploreBook("$it", "Book $it", "", "") }
         val events = mutableListOf<String>()
@@ -222,12 +197,6 @@ class LinovelibBookDetailsTest {
             LinovelibDiagnostics { _, _, message, _ -> events += message }, metadata = LinovelibMetadataStore())
         assertSame(cancelled, runCatching { details.enrich(books).toList() }.exceptionOrNull())
         assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), requested)
-        assertTrue(events.isEmpty())
-
-        val failure = IllegalStateException("Collector failed")
-        requested.clear()
-        assertSame(failure, runCatching { details.enrich(books).collect { throw failure } }.exceptionOrNull())
-        assertTrue(requested.isEmpty())
         assertTrue(events.isEmpty())
 
         val refreshEvents = mutableListOf<String>()
@@ -253,7 +222,7 @@ class LinovelibBookDetailsTest {
 
         assertSame(refreshFailure, observedFailure)
         assertTrue(reachedRefresh)
-        assertEquals(listOf("1" to "Book 1", "2" to "Book 2", "1" to "Book fresh-1"), emitted)
+        assertEquals(listOf("1" to "Book fresh-1"), emitted)
         assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), refreshRequests)
         assertTrue(refreshEvents.isEmpty())
     }

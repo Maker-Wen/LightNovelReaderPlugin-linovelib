@@ -61,7 +61,8 @@ internal data class ParsedExploreBook(
 
 internal data class ParsedListPage(
     val books: List<ParsedExploreBook>,
-    val lastPage: Int
+    val lastPage: Int,
+    val nextPageUrl: String?
 )
 
 internal sealed class ParsedContentBlock {
@@ -225,7 +226,10 @@ internal class LinovelibHtmlParser(
             // Candidate rows without usable book information are not an empty result.
             if (list.select(".book-li, a[href*=/novel/]").isNotEmpty()) return null
         }
-        return ParsedListPage(books, parseLastPage(document))
+        val nextPageUrl = document.selectFirst("#pagelink a.next[href]")
+            ?.takeIf { it.attr("href") != "#" }
+            ?.absUrl("href")
+        return ParsedListPage(books, parseLastPage(document), nextPageUrl)
     }
 
     private fun expandedListUrl(element: Element, selector: String): String? {

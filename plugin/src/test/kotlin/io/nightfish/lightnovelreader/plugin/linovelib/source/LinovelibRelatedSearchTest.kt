@@ -139,7 +139,7 @@ class LinovelibRelatedSearchTest {
 
         val results = page.getResultFlow().toList()
 
-        assertEquals(listOf("Author"), keywords)
+        assertEquals(listOf(LinovelibUrls.search(LinovelibUrls.HOST, "Author")), keywords)
         assertEquals(listOf("100", "200"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
         assertEquals(3, results.size)
         assertTrue(results.last() is SearchResult.End)
@@ -168,7 +168,7 @@ class LinovelibRelatedSearchTest {
             assertEquals("3247", (results.first() as SearchResult.SingleBook).bookId)
             assertEquals(2, results.size)
             assertTrue(results.last() is SearchResult.End)
-            assertEquals(if (keyword == "SAO") listOf(keyword) else emptyList<String>(), keywords)
+            assertEquals(if (keyword == "SAO") listOf(LinovelibUrls.search(LinovelibUrls.HOST, keyword)) else emptyList<String>(), keywords)
             assertTrue(details.isEmpty())
         }
     }

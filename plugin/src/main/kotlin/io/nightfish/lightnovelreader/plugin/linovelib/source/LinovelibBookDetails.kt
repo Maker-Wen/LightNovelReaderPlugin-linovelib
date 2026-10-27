@@ -20,12 +20,8 @@ internal class LinovelibBookDetails(
             .takeIf { it.title.isNotBlank() }
             ?.also(metadata::rememberBook)
 
-    // Emit every initial book before fetching details. A stored summary must not replace
-    // the current list's summary, and cached details must not suppress a fresh request.
+    // Refresh sequentially after the caller has displayed all list summaries.
     fun enrich(books: List<ParsedExploreBook>): Flow<ParsedBookInformation> = flow {
-        books.forEach { book ->
-            emit(metadata.bookInformation(book.id) ?: book.toParsedBookInformation())
-        }
         books.forEach { book ->
             val information = runCatching {
                 fetch(book.id)

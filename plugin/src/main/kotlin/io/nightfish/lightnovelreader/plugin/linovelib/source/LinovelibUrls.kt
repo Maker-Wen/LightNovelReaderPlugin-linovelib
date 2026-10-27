@@ -3,6 +3,9 @@ package io.nightfish.lightnovelreader.plugin.linovelib.source
 internal object LinovelibUrls {
     const val HOST = "https://www.bilinovel.net"
 
+    fun search(host: String, keyword: String): String =
+        "$host/search.html?searchkey=${java.net.URLEncoder.encode(keyword, "UTF-8")}"
+
     fun top(host: String): String = "$host/top.html"
 
     fun complete(host: String): String = "$host/topfull/postdate/1.html"

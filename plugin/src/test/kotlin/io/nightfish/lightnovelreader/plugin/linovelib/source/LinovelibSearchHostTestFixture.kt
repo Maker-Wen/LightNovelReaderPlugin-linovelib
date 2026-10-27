@@ -13,5 +13,13 @@ internal fun testSearchProvider(
     parser,
     diagnostics,
     metadata,
-    LinovelibBookDetails(htmlLoader, parser, diagnostics, host, metadata)
+    LinovelibBookDetails(htmlLoader, parser, diagnostics, host, metadata),
+    host
 )
+
+internal fun searchPage(ids: List<String>, next: String? = null): String = """
+    <ol class="book-ol">
+      ${ids.joinToString("") { "<li class=\"book-li\"><a class=\"book-layout\" href=\"/novel/$it.html\"><h4 class=\"book-title\">Book $it</h4></a></li>" }}
+    </ol>
+    ${next?.let { "<div id=\"pagelink\"><a class=\"next\" href=\"$it\">下一页</a></div>" }.orEmpty()}
+""".trimIndent()

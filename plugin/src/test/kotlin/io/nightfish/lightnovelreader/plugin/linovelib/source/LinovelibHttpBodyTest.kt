@@ -92,7 +92,7 @@ class LinovelibHttpBodyTest {
     }
 
     @Test
-    fun searchRetriesOnlyBrokenStageBeforeUsingCompleteGuardCookies() = runBlocking {
+    fun searchRetriesBrokenGuardsAndRenewsTicketAfterBrokenResults() = runBlocking {
         for (brokenStage in listOf("js", "css", "redeem", "results")) {
             val events = CopyOnWriteArrayList<String>()
             val failures = AtomicInteger()
@@ -111,10 +111,11 @@ class LinovelibHttpBodyTest {
                 }
             }.use { site ->
                 val client = site.client(events)
-                val response = client.search("Book")
+                val response = client.search(LinovelibUrls.search(site.host, "Book"))
                 assertEquals("Complete results", response.html)
                 assertEquals("${site.host}/search.html?searchkey=Book", response.finalUrl)
-                val expectedStages = listOf("js", "css", "redeem", "results").flatMap {
+                val stages = listOf("js", "css", "redeem", "results")
+                val expectedStages = if (brokenStage == "results") stages + stages else stages.flatMap {
                     if (it == brokenStage) listOf(it, it) else listOf(it)
                 }
                 assertEquals(expectedStages, site.requests.map { stage(it.target) })

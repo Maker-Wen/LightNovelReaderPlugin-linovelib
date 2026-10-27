@@ -13,7 +13,8 @@ internal class LinovelibSearchProvider(
     private val parser: LinovelibHtmlParser,
     private val diagnostics: LinovelibDiagnostics,
     private val metadata: LinovelibMetadataStore,
-    private val details: LinovelibBookDetails
+    private val details: LinovelibBookDetails,
+    private val host: String = LinovelibUrls.HOST
 ) : SearchProvider {
 
     override val searchTypes: List<SearchType> = listOf(
@@ -61,73 +62,80 @@ internal class LinovelibSearchProvider(
             return@flow
         }
 
-        val searchResponse = runCatching {
-            searchHtmlLoader(query)
-        }.onFailure {
-            it.rethrowIfCancellation()
-            diagnostics.error("SEARCH_REQUEST_ERROR", it, mapOf("keyword" to query))
-        }.getOrNull()
+        val books = mutableListOf<ParsedExploreBook>()
+        val displayedBooks = mutableMapOf<String, MutableList<MutableBookInformation>>()
+        var pageUrl: String? = LinovelibUrls.search(host, query)
+        var pageError: String? = null
+        while (pageUrl != null) {
+            val url = pageUrl
+            val searchResponse = runCatching {
+                searchHtmlLoader(url)
+            }.onFailure {
+                it.rethrowIfCancellation()
+                diagnostics.error("SEARCH_REQUEST_ERROR", it, mapOf("keyword" to query, "url" to url))
+            }.getOrNull()
+            if (searchResponse == null) {
+                pageError = "Linovelib 搜索请求失败，请稍后重试"
+                break
+            }
 
-        if (searchResponse == null) {
-            emit(SearchResult.Error("Linovelib 搜索请求失败，请稍后重试"))
-            emit(SearchResult.End())
-            return@flow
-        }
-
-        val redirectedBookId = parser.bookIdFromKeyword(searchResponse.finalUrl)
-        if (redirectedBookId != null) {
-            if (loadDetails) {
-                val book = runCatching {
-                    details.acceptHtml(redirectedBookId, searchResponse.html)?.toMutableBookInformation()
-                }.onFailure {
-                    it.rethrowIfCancellation()
-                    diagnostics.error("SEARCH_REDIRECT_ERROR", it, mapOf("bookId" to redirectedBookId))
-                }.getOrNull()
-                if (book != null) {
-                    emit(SearchResult.MultipleBook(book))
+            val redirectedBookId = parser.bookIdFromKeyword(searchResponse.finalUrl)
+            if (redirectedBookId != null) {
+                if (loadDetails) {
+                    val book = runCatching {
+                        details.acceptHtml(redirectedBookId, searchResponse.html)?.toMutableBookInformation()
+                    }.onFailure {
+                        it.rethrowIfCancellation()
+                        diagnostics.error("SEARCH_REDIRECT_ERROR", it, mapOf("bookId" to redirectedBookId))
+                    }.getOrNull()
+                    if (book != null) {
+                        emit(SearchResult.MultipleBook(book))
+                    } else {
+                        emit(SearchResult.SingleBook(redirectedBookId))
+                    }
                 } else {
                     emit(SearchResult.SingleBook(redirectedBookId))
                 }
-            } else {
-                emit(SearchResult.SingleBook(redirectedBookId))
+                diagnostics.info(
+                    "SEARCH_DONE",
+                    mapOf("mode" to "redirect", "results" to 1, "bookId" to redirectedBookId)
+                )
+                emit(SearchResult.End())
+                return@flow
             }
-            diagnostics.info(
-                "SEARCH_DONE",
-                mapOf("mode" to "redirect", "results" to 1, "bookId" to redirectedBookId)
-            )
-            emit(SearchResult.End())
-            return@flow
-        }
 
-        val page = parser.parseListPage(searchResponse.html)
-        val books = page?.books.orEmpty()
-        metadata.rememberBooks(books)
-        diagnostics.info(
-            "SEARCH_SOURCE",
-            linkedMapOf(
-                "source" to "guarded-search",
-                "keyword" to query,
-                "books" to books.size
+            val page = parser.parseListPage(searchResponse.html)
+            if (page == null) {
+                pageError = "无法识别 Linovelib 搜索结果，请稍后重试"
+                break
+            }
+            metadata.rememberBooks(page.books)
+            diagnostics.info(
+                "SEARCH_SOURCE",
+                mapOf("source" to "guarded-search", "keyword" to query, "url" to url, "books" to page.books.size)
             )
-        )
-        if (books.isEmpty()) {
-            emit(
-                if (page != null) SearchResult.Empty()
-                else SearchResult.Error("无法识别 Linovelib 搜索结果，请稍后重试")
-            )
-        } else if (!loadDetails) {
-            books.forEach { emit(SearchResult.SingleBook(it.id)) }
-        } else {
-            val displayedBooks = mutableMapOf<String, MutableBookInformation>()
-            details.enrich(books).collect { parsedBook ->
-                val information = parsedBook.toMutableBookInformation()
-                val displayed = displayedBooks[parsedBook.id]
-                if (displayed == null) {
-                    displayedBooks[parsedBook.id] = information
+            for (book in page.books) {
+                books += book
+                if (loadDetails) {
+                    val information = (metadata.bookInformation(book.id) ?: book.toParsedBookInformation())
+                        .toMutableBookInformation()
+                    displayedBooks.getOrPut(book.id) { mutableListOf() }.add(information)
                     emit(SearchResult.MultipleBook(information))
                 } else {
-                    displayed.update(information)
+                    emit(SearchResult.SingleBook(book.id))
                 }
+            }
+            pageUrl = page.nextPageUrl
+        }
+        if (pageError != null) {
+            emit(SearchResult.Error(pageError))
+        } else if (books.isEmpty()) {
+            emit(SearchResult.Empty())
+        } else if (loadDetails) {
+            // Finish the result pages before detail requests can delay the next page.
+            details.enrich(books).collect { parsedBook ->
+                val information = parsedBook.toMutableBookInformation()
+                displayedBooks.getValue(parsedBook.id).forEach { it.update(information) }
             }
         }
         diagnostics.info(
