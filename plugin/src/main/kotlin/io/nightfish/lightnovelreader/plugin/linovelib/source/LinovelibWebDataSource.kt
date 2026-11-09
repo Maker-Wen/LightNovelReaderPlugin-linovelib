@@ -40,7 +40,7 @@ class LinovelibWebDataSource internal constructor(
     private val httpClient = LinovelibHttpClient(diagnostics = diagnostics)
     private val loadHtml = htmlLoader ?: httpClient::loadHtml
     private val details = LinovelibBookDetails(
-        loadHtml, parser, diagnostics, metadata = metadata
+        loadHtml, parser, metadata = metadata
     )
     private var offlineProbeJob: Job? = null
     override val permits: Int = 1
@@ -52,7 +52,7 @@ class LinovelibWebDataSource internal constructor(
     override val offLine: Boolean get() = httpClient.isOffLineFlow.value
     override val isOffLineFlow: StateFlow<Boolean> get() = httpClient.isOffLineFlow
     private val linovelibSearchProvider = LinovelibSearchProvider(
-        httpClient::search,
+        httpClient::newSearchLoader,
         parser,
         diagnostics,
         metadata,
@@ -62,7 +62,7 @@ class LinovelibWebDataSource internal constructor(
     private val linovelibExplorePageProvider = LinovelibExplorePageProvider(
         httpClient::loadHtml,
         parser,
-        linovelibSearchProvider::searchBookIds,
+        linovelibSearchProvider::searchRelated,
         LinovelibUrls.HOST,
         metadata
     )
@@ -81,7 +81,7 @@ class LinovelibWebDataSource internal constructor(
     override fun onLoad() {
         if (offlineProbeJob?.isActive == true) return
         offlineProbeJob = scope.launch {
-            httpClient.checkOffline()
+            httpClient.checkStartupOffline()
         }
     }
 

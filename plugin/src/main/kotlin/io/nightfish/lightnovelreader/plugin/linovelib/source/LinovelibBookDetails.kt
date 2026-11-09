@@ -1,12 +1,8 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
-
 internal class LinovelibBookDetails(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
-    private val diagnostics: LinovelibDiagnostics,
     private val host: String = LinovelibUrls.HOST,
     private val metadata: LinovelibMetadataStore
 ) {
@@ -19,17 +15,4 @@ internal class LinovelibBookDetails(
         parser.parseBookInformation(id, html)
             .takeIf { it.title.isNotBlank() }
             ?.also(metadata::rememberBook)
-
-    // Refresh sequentially after the caller has displayed all list summaries.
-    fun enrich(books: List<ParsedExploreBook>): Flow<ParsedBookInformation> = flow {
-        books.forEach { book ->
-            val information = runCatching {
-                fetch(book.id)
-            }.onFailure {
-                it.rethrowIfCancellation()
-                diagnostics.error("SEARCH_DETAIL_ERROR", it, mapOf("bookId" to book.id))
-            }.getOrNull()
-            if (information != null) emit(information)
-        }
-    }
 }

@@ -9,11 +9,11 @@ internal fun testSearchProvider(
     host: String = LinovelibUrls.HOST,
     metadata: LinovelibMetadataStore = LinovelibMetadataStore()
 ): LinovelibSearchProvider = LinovelibSearchProvider(
-    searchHtmlLoader,
+    { searchHtmlLoader },
     parser,
     diagnostics,
     metadata,
-    LinovelibBookDetails(htmlLoader, parser, diagnostics, host, metadata),
+    LinovelibBookDetails(htmlLoader, parser, host, metadata),
     host
 )
 

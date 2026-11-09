@@ -57,7 +57,12 @@ internal data class ParsedExploreBook(
     val id: String,
     val title: String,
     val author: String,
-    val coverUrl: String
+    val coverUrl: String,
+    val description: String = "",
+    val tags: List<String> = emptyList(),
+    val publishingHouse: String = "",
+    val wordCount: Int = 0,
+    val isComplete: Boolean = false
 )
 
 internal data class ParsedListPage(
@@ -239,8 +244,8 @@ internal class LinovelibHtmlParser(
     }
 
     /** Null means unrecognized; an empty book list means a recognized empty page. */
-    fun parseListPage(html: String): ParsedListPage? {
-        val document = Jsoup.parse(html, host)
+    fun parseListPage(html: String, baseUrl: String = host): ParsedListPage? {
+        val document = Jsoup.parse(html, baseUrl)
         val books = document.select("a.book-layout[href]")
             .mapNotNull(::parseExploreBook)
             .distinctBy { it.id }
@@ -313,7 +318,27 @@ internal class LinovelibHtmlParser(
             .orEmpty()
             .ifEmpty { LinovelibUrls.cover(host, id) }
 
-        return ParsedExploreBook(id, title, author, coverUrl)
+        val metadata = element.selectFirst(".book-meta-r .tag-small-group")
+        val searchStatus = metadata?.selectFirst(".tag-small.gray")
+        // Search uses gray for status and yellow for the publisher. Library and author lists
+        // use red for status, yellow for themes, and blue for the compact word count.
+        val status = (searchStatus ?: metadata?.selectFirst(".tag-small.red"))?.text().orEmpty()
+        val themeSelector = if (searchStatus != null) ".tag-small.red" else ".tag-small.yellow"
+        val themes = metadata?.selectFirst(themeSelector)?.text().orEmpty()
+        val publisher = if (searchStatus != null) metadata.selectFirst(".tag-small.yellow")?.text().orEmpty() else ""
+        val wordCountText = metadata?.selectFirst(".tag-small.blue")?.text().orEmpty()
+
+        return ParsedExploreBook(
+            id = id,
+            title = title,
+            author = author,
+            coverUrl = coverUrl,
+            description = element.selectFirst(".book-desc, .book-intro")?.let(::htmlWithBreaksToText).orEmpty(),
+            tags = themes.split(' ').filter(String::isNotBlank),
+            publishingHouse = publisher,
+            wordCount = parseWordCount(LIST_WORD_COUNT.matchEntire(wordCountText)),
+            isComplete = STATUS_COMPLETE.matches(status)
+        )
     }
 
     private fun parseContentBlocks(element: Element): List<ParsedContentBlock> {
@@ -353,10 +378,11 @@ internal class LinovelibHtmlParser(
         return blocks
     }
 
-    private fun parseWordCount(text: String): Int {
-        val match = WORD_COUNT.find(text) ?: return 0
-        val number = match.groupValues[1].toDoubleOrNull() ?: return 0
-        val unit = match.groupValues[2]
+    private fun parseWordCount(text: String): Int = parseWordCount(WORD_COUNT.find(text))
+
+    private fun parseWordCount(match: MatchResult?): Int {
+        val (value, unit) = match?.destructured ?: return 0
+        val number = value.toDoubleOrNull() ?: return 0
         return if (unit.isNotEmpty()) (number * 10_000).toInt() else number.toInt()
     }
 
@@ -434,6 +460,7 @@ internal class LinovelibHtmlParser(
         val BOOK_ID = Regex("""/novel/(\d+)""")
         val CHAPTER_ID = Regex("""/novel/\d+/(\d+)(?:_\d+)?\.html""")
         val WORD_COUNT = Regex("""([\d.]+)\s*([\u842c\u4e07]?)\u5b57""")
+        val LIST_WORD_COUNT = Regex("""(\d+(?:\.\d+)?)\s*([万萬]?)字?""")
         val LAST_UPDATED = Regex("""\d{4}-\d{2}-\d{2}""")
         val PREVIOUS_URL = Regex("""url_previous\s*:\s*(['"])(.*?)\1""")
         val NEXT_URL = Regex("""url_next\s*:\s*(['"])(.*?)\1""")

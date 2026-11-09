@@ -76,7 +76,9 @@ internal class LinovelibLinkedExpandedPageDataSource(
                 }
                 metadata.rememberBooks(page.books)
                 val books = page.books.filter { emittedBookIds.add(it.id) }
-                books.forEach { emit(SearchResult.SingleBook(it.id)) }
+                for (book in books) {
+                    emit(SearchResult.MultipleBook(metadata.createListCard(book)))
+                }
                 if (currentPage == 1 && books.isEmpty()) break
                 if (currentPage >= lastPage) break
                 if (books.isNotEmpty()) requests.receive()
@@ -95,7 +97,7 @@ internal class LinovelibLinkedExpandedPageDataSource(
 }
 
 internal class LinovelibRelatedExpandedPageDataSource(
-    private val searchBookIds: (String) -> Flow<SearchResult>,
+    private val searchRelated: (String) -> Flow<SearchResult>,
     displayTag: String
 ) : ExploreExpandedPageDataSource {
     override val title: String = displayTag
@@ -103,7 +105,14 @@ internal class LinovelibRelatedExpandedPageDataSource(
 
     override fun loadMore() = Unit
 
-    override fun getResultFlow(): Flow<SearchResult> = searchBookIds(LinovelibRelatedSearch.keyword(title))
+    override fun getResultFlow(): Flow<SearchResult> = flow {
+        val emittedBookIds = mutableSetOf<String>()
+        searchRelated(LinovelibRelatedSearch.keyword(title)).collect { result ->
+            if (result !is SearchResult.MultipleBook || emittedBookIds.add(result.bookInformation.id)) {
+                emit(result)
+            }
+        }
+    }
 }
 
 internal object LinovelibRelatedNavigation {

@@ -31,6 +31,23 @@ class LinovelibBookMappingHostTest {
     }
 
     @Test
+    fun listMappingPreservesAvailableMetadataWithoutInventingAnUpdateDate() {
+        val summary = ParsedExploreBook(
+            "1", "Title", "Author", "https://example.com/cover.jpg",
+            description = "Synopsis", tags = listOf("Theme"), publishingHouse = "Publisher",
+            wordCount = 385_000, isComplete = true
+        )
+        val book: BookInformation = summary.toParsedBookInformation().toMutableBookInformation()
+
+        assertEquals("Synopsis", book.description)
+        assertEquals(listOf("作者：Author", "Theme"), book.tags)
+        assertEquals("Publisher", book.publishingHouse)
+        assertEquals(385_000, book.wordCount.count)
+        assertTrue(book.isComplete)
+        assertEquals(LocalDateTime.MIN, book.lastUpdated)
+    }
+
+    @Test
     fun emptyCoverPreservesTheHostUriValue() {
         val book = ParsedExploreBook("1", "Title", "", "")
             .toParsedBookInformation().toMutableBookInformation()

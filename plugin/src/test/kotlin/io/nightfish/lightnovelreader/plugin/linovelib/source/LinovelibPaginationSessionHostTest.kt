@@ -23,9 +23,9 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
-class LinovelibPaginationSessionTest {
+class LinovelibPaginationSessionHostTest {
     @Test
-    fun `two pages with the same id paginate independently and returning to the first keeps its session`() = runBlocking {
+    fun twoPagesWithTheSameIdPaginateIndependentlyAndReturningToTheFirstKeepsItsSession() = runBlocking {
         withTimeout(5_000) {
             val requested = mutableListOf<String>()
             val provider = LinovelibExplorePageProvider(
@@ -39,7 +39,7 @@ class LinovelibPaginationSessionTest {
                     listPage(id, lastPage = 3)
                 },
                 parser = LinovelibHtmlParser(),
-                searchBookIds = { flowOf(SearchResult.End()) },
+                searchRelated = { flowOf(SearchResult.End()) },
                 metadata = LinovelibMetadataStore()
             )
             val first = provider.exploreExpandedPageDataSourceMap.getValue(LinovelibExplorePageProvider.WENKU_PAGE_ID)
@@ -51,20 +51,20 @@ class LinovelibPaginationSessionTest {
             val firstCollection = launch { first.getResultFlow().collect { firstResults.send(it) } }
             var secondCollection: Job? = null
             try {
-                assertEquals("100", (firstResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (firstResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 val second = provider.exploreExpandedPageDataSourceMap.getValue(LinovelibExplorePageProvider.WENKU_PAGE_ID)
                 assertEquals("不限", (second.filters.first() as SingleChoiceFilter).value)
                 secondCollection = launch { second.getResultFlow().collect { secondResults.send(it) } }
-                assertEquals("100", (secondResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (secondResults.receive() as SearchResult.MultipleBook).bookInformation.id)
 
                 first.loadMore()
-                assertEquals("200", (firstResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("200", (firstResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(secondResults.tryReceive().isFailure)
                 secondCollection.cancelAndJoin()
 
                 assertEquals("日本轻小说", firstRegion.value)
                 first.loadMore()
-                assertEquals("300", (firstResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("300", (firstResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(firstResults.receive() is SearchResult.End)
                 firstCollection.join()
                 assertEquals(listOf(
@@ -81,7 +81,7 @@ class LinovelibPaginationSessionTest {
     }
 
     @Test
-    fun `each collection snapshots filters and resets paging deduplication and pending requests`() = runBlocking {
+    fun eachCollectionSnapshotsFiltersAndResetsPagingDeduplicationAndPendingRequests() = runBlocking {
         withTimeout(5_000) {
             val filters = LinovelibWenkuFilters(HOST)
             val region = filters.filters.first() as SingleChoiceFilter
@@ -101,20 +101,20 @@ class LinovelibPaginationSessionTest {
             val first = launch { flow.collect { results.send(it) } }
             var second: Job? = null
             try {
-                assertEquals("100", (results.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (results.receive() as SearchResult.MultipleBook).bookInformation.id)
                 region.value = "华文轻小说"
                 page.loadMore()
-                assertEquals("200", (results.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("200", (results.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(results.receive() is SearchResult.End)
                 first.join()
                 page.loadMore() // A completed session must not leave a request for the next one.
 
                 second = launch { flow.collect { results.send(it) } }
-                assertEquals("100", (results.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (results.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(results.tryReceive().isFailure)
                 assertEquals(3, requested.size)
                 page.loadMore()
-                assertEquals("200", (results.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("200", (results.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(results.receive() is SearchResult.End)
                 second.join()
                 assertEquals(listOf(
@@ -131,7 +131,7 @@ class LinovelibPaginationSessionTest {
     }
 
     @Test
-    fun `cancelled filter snapshot cannot request or replace a newer collection`() = runBlocking {
+    fun cancelledFilterSnapshotCannotRequestOrReplaceANewerCollection() = runBlocking {
         withTimeout(5_000) {
             val oldSnapshotStarted = CompletableDeferred<Unit>()
             val releaseOldSnapshot = CountDownLatch(1)
@@ -164,7 +164,7 @@ class LinovelibPaginationSessionTest {
                 oldSnapshotStarted.await()
                 oldCollection.cancel()
                 newCollection = launch { page.getResultFlow().collect { newResults.send(it) } }
-                assertEquals("100", (newResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (newResults.receive() as SearchResult.MultipleBook).bookInformation.id)
 
                 releaseOldSnapshot.countDown()
                 oldCollection.join()
@@ -172,7 +172,7 @@ class LinovelibPaginationSessionTest {
                 assertTrue(oldResults.isEmpty())
                 assertEquals(listOf("$HOST/top/monthvisit/1.html"), requested.toList())
                 page.loadMore()
-                assertEquals("200", (newResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("200", (newResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(newResults.receive() is SearchResult.End)
                 newCollection.join()
             } finally {
@@ -184,7 +184,7 @@ class LinovelibPaginationSessionTest {
     }
 
     @Test
-    fun `late completion of a cancelled request cannot emit results or clear the newer session`() = runBlocking {
+    fun lateCompletionOfACancelledRequestCannotEmitResultsOrClearTheNewerSession() = runBlocking {
         withTimeout(5_000) {
             val oldRequestStarted = CompletableDeferred<Unit>()
             val releaseOldRequest = CompletableDeferred<Unit>()
@@ -213,13 +213,13 @@ class LinovelibPaginationSessionTest {
                 oldRequestStarted.await()
                 old.cancel()
                 current = launch { page.getResultFlow().collect { newResults.send(it) } }
-                assertEquals("100", (newResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (newResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 releaseOldRequest.complete(Unit)
                 old.join()
                 assertTrue(oldResults.isEmpty())
 
                 page.loadMore()
-                assertEquals("200", (newResults.receive() as SearchResult.SingleBook).bookId)
+                assertEquals("200", (newResults.receive() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(newResults.receive() is SearchResult.End)
                 current.join()
                 assertEquals(listOf(
@@ -234,7 +234,7 @@ class LinovelibPaginationSessionTest {
     }
 
     @Test
-    fun `cancellation from URL snapshot or loader emits no terminal result and allows recollection`() = runBlocking {
+    fun cancellationFromURLSnapshotOrLoaderEmitsNoTerminalResultAndAllowsRecollection() = runBlocking {
         withTimeout(5_000) {
             for (cancelInSnapshot in listOf(true, false)) {
                 var firstAttempt = true
@@ -261,7 +261,7 @@ class LinovelibPaginationSessionTest {
                 page.loadMore()
                 val refreshed = page.getResultFlow().toList()
                 assertEquals(2, refreshed.size)
-                assertEquals("100", (refreshed.first() as SearchResult.SingleBook).bookId)
+                assertEquals("100", (refreshed.first() as SearchResult.MultipleBook).bookInformation.id)
                 assertTrue(refreshed.last() is SearchResult.End)
             }
         }

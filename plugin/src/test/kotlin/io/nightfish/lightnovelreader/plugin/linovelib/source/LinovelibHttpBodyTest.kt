@@ -111,7 +111,7 @@ class LinovelibHttpBodyTest {
                 }
             }.use { site ->
                 val client = site.client(events)
-                val response = client.search(LinovelibUrls.search(site.host, "Book"))
+                val response = client.newSearchLoader()(LinovelibUrls.search(site.host, "Book"))
                 assertEquals("Complete results", response.html)
                 assertEquals("${site.host}/search.html?searchkey=Book", response.finalUrl)
                 val stages = listOf("js", "css", "redeem", "results")

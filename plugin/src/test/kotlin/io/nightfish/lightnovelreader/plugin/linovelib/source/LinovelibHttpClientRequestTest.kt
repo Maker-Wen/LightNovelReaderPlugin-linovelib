@@ -1,10 +1,10 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
-import io.nightfish.lightnovelreader.api.web.search.SearchResult
-import kotlinx.coroutines.flow.toList
+import com.sun.net.httpserver.HttpExchange
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -16,52 +16,126 @@ import java.util.concurrent.atomic.AtomicLong
 
 class LinovelibHttpClientRequestTest {
     @Test
-    fun `each search page and retried result request redeem a new one use ticket`() = runBlocking {
-        val guards = AtomicInteger()
-        val pageTwoAttempts = AtomicInteger()
-        val usedTickets = mutableSetOf<String>()
-        LinovelibHttpTestSite { exchange ->
-            val query = exchange.requestURI.rawQuery.orEmpty()
-            when {
-                query == "search_guard=js" -> {
-                    val guard = guards.incrementAndGet()
-                    exchange.respond(200, "document.cookie=\"jieqiSearchJs=js-$guard; path=/\";", "application/javascript")
-                }
-                query == "search_guard=css" -> {
-                    exchange.responseHeaders.add("Set-Cookie", "jieqiSearchCss=css-${guards.get()}; Path=/")
-                    exchange.respond(200, "body{}", "text/css")
-                }
-                query.startsWith("search_guard=redeem&r=") -> {
-                    exchange.responseHeaders.add("Set-Cookie", "jieqiSearchTicket=ticket-${guards.get()}; Path=/")
-                    exchange.respond(200)
-                }
-                else -> {
-                    val ticket = exchange.requestHeaders.getFirst("Cookie").orEmpty()
-                    when {
-                        !usedTickets.add(ticket) -> exchange.respond(200, "")
-                        query.startsWith("searchkey=") -> exchange.respond(200, searchPage(listOf("1"), "/search/Book_2.html"))
-                        pageTwoAttempts.incrementAndGet() == 1 -> exchange.respond(500)
-                        else -> exchange.respond(200, searchPage(listOf("2"), "#"))
-                    }
+    fun `three search pages reuse one guard pair and use three one use tickets in eight requests`() = runBlocking {
+        guardedSearchSite { path, _ ->
+            val html = when (path) {
+                "/search.html" -> searchPage(listOf("1"), "/search/Book_2.html")
+                "/search/Book_2.html" -> searchPage(listOf("2"), "/search/Book_3.html")
+                else -> searchPage(listOf("3"), "#")
+            }
+            respond(200, html)
+        }.use { site ->
+            val load = site.client().newSearchLoader()
+            val parser = LinovelibHtmlParser(site.host)
+            var nextPage: String? = LinovelibUrls.search(site.host, "Book")
+            val ids = buildList {
+                repeat(3) {
+                    val page = requireNotNull(parser.parseListPage(load(requireNotNull(nextPage)).html))
+                    addAll(page.books.map { it.id })
+                    nextPage = page.nextPageUrl
                 }
             }
+
+            assertEquals(listOf("1", "2", "3"), ids)
+            assertNull(nextPage)
+            assertEquals(8, site.requests.size)
+            assertGuardPairs(site, 1, 1, 1)
+            assertTickets(site, 1, 2, 3)
+        }
+    }
+
+    @Test
+    fun `a retried search result refreshes the pair and uses a different ticket`() = runBlocking {
+        guardedSearchSite { _, ticket ->
+            if (ticket == 2) respond(500) else respond(200, searchPage(listOf("1")))
         }.use { site ->
-            val client = site.client()
-            val provider = testSearchProvider(
-                htmlLoader = { error("ID search must not fetch details") },
-                searchHtmlLoader = client::search,
-                parser = LinovelibHtmlParser(site.host), host = site.host
+            val load = site.client().newSearchLoader()
+            load(LinovelibUrls.search(site.host, "Book"))
+            val secondUrl = "${site.host}/search/Book_2.html"
+            assertEquals(searchPage(listOf("1")), load(secondUrl).html)
+
+            assertEquals(10, site.requests.size)
+            assertGuardPairs(site, 1, 1, 2)
+            assertTickets(site, 1, 2, 3)
+            assertEquals(
+                listOf("/search.html", "/search/Book_2.html", "/search/Book_2.html"),
+                resultRequests(site).map { it.path }
             )
+        }
+    }
 
-            val results = provider.searchBookIds("Book").toList()
+    @Test
+    fun `interleaved search sessions each keep their own guard pair`() = runBlocking {
+        guardedSearchSite { _, _ -> respond(200, searchPage(listOf("1"))) }.use { site ->
+            val client = site.client()
+            val first = client.newSearchLoader()
+            val second = client.newSearchLoader()
+            first(LinovelibUrls.search(site.host, "First"))
+            second(LinovelibUrls.search(site.host, "Second"))
+            first("${site.host}/search/First_2.html")
+            second("${site.host}/search/Second_2.html")
 
-            assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
-            assertTrue(results.none { it is SearchResult.Error })
-            assertTrue(results.last() is SearchResult.End)
-            assertEquals(3, guards.get())
-            val resultRequests = site.requests.filter { it.query?.startsWith("search_guard=") != true }
-            assertEquals(listOf("ticket-1", "ticket-2", "ticket-3"), resultRequests.map { it.cookies["jieqiSearchTicket"] })
-            assertEquals(listOf("/search.html", "/search/Book_2.html", "/search/Book_2.html"), resultRequests.map { it.path })
+            assertEquals(12, site.requests.size)
+            assertGuardPairs(site, 1, 2, 1, 2)
+            assertTickets(site, 1, 2, 3, 4)
+        }
+    }
+
+    @Test
+    fun `a missing ticket on reuse refreshes the pair for the same result page`() = runBlocking {
+        guardedSearchSite(issueTicket = { redeem -> redeem != 2 }) { _, _ ->
+            respond(200, searchPage(listOf("1")))
+        }.use { site ->
+            val load = site.client().newSearchLoader()
+            load(LinovelibUrls.search(site.host, "Book"))
+            assertEquals(searchPage(listOf("1")), load("${site.host}/search/Book_2.html").html)
+            load("${site.host}/search/Book_3.html")
+
+            assertEquals(11, site.requests.size)
+            assertGuardPairs(site, 1, 1, 2, 2)
+            assertTickets(site, 1, 3, 4)
+        }
+    }
+
+    @Test
+    fun `a blank result after reuse refreshes and retries the same page only once`() = runBlocking {
+        for (freshPage in listOf(searchPage(listOf("2")), "")) {
+            guardedSearchSite { path, ticket ->
+                val html = when {
+                    path == "/search.html" -> searchPage(listOf("1"))
+                    ticket == 2 -> ""
+                    else -> freshPage
+                }
+                respond(200, html)
+            }.use { site ->
+                val load = site.client().newSearchLoader()
+                load(LinovelibUrls.search(site.host, "Book"))
+                assertEquals(freshPage, load("${site.host}/search/Book_2.html").html)
+
+                assertEquals(10, site.requests.size)
+                assertGuardPairs(site, 1, 1, 2)
+                assertTickets(site, 1, 2, 3)
+                assertEquals(
+                    listOf("/search.html", "/search/Book_2.html", "/search/Book_2.html"),
+                    resultRequests(site).map { it.path }
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a valid empty result does not refresh the reused pair`() = runBlocking {
+        guardedSearchSite { path, _ ->
+            respond(200, searchPage(if (path == "/search.html") listOf("1") else emptyList()))
+        }.use { site ->
+            val load = site.client().newSearchLoader()
+            load(LinovelibUrls.search(site.host, "Book"))
+            val second = load("${site.host}/search/Book_2.html")
+            assertTrue(requireNotNull(LinovelibHtmlParser(site.host).parseListPage(second.html)).books.isEmpty())
+
+            assertEquals(6, site.requests.size)
+            assertGuardPairs(site, 1, 1)
+            assertTickets(site, 1, 2)
         }
     }
 
@@ -188,7 +262,7 @@ class LinovelibHttpClientRequestTest {
             val client = site.client()
             client.loadHtml("${site.host}/seed")
             repeat(2) { attempt ->
-                val result = client.search(LinovelibUrls.search(site.host, "川原 礫&+"))
+                val result = client.newSearchLoader()(LinovelibUrls.search(site.host, "川原 礫&+"))
                 assertEquals("${site.host}/novel/100.html", result.finalUrl)
                 assertEquals("<h1 class=book-title>Book</h1>", result.html)
                 val requests = site.requests.drop(1 + attempt * 5).take(5)
@@ -325,10 +399,64 @@ class LinovelibHttpClientRequestTest {
                 exchange.respond(200, if (stage == 1 && stage < missingStage) "jieqiSearchJs=js" else "Missing guard")
             }.use { site ->
                 val client = site.client()
-                assertTrue(runCatching { client.search(LinovelibUrls.search(site.host, "Book")) }.exceptionOrNull() is IllegalArgumentException)
+                val load = client.newSearchLoader()
+                assertTrue(runCatching { load(LinovelibUrls.search(site.host, "Book")) }.exceptionOrNull() is IllegalArgumentException)
                 assertEquals(missingStage, site.requests.size)
                 assertFalse(client.isOffLineFlow.value)
             }
         }
     }
+
+    private fun guardedSearchSite(
+        issueTicket: (Int) -> Boolean = { true },
+        respondToPage: HttpExchange.(path: String, ticket: Int) -> Unit
+    ): LinovelibHttpTestSite {
+        var guards = 0
+        var redeems = 0
+        val availableTickets = mutableSetOf<Int>()
+        return LinovelibHttpTestSite { exchange ->
+            val query = exchange.requestURI.rawQuery.orEmpty()
+            when {
+                query == "search_guard=js" -> {
+                    val guard = ++guards
+                    exchange.respond(200, "document.cookie=\"jieqiSearchJs=js-$guard; path=/\";", "application/javascript")
+                }
+                query == "search_guard=css" -> {
+                    exchange.responseHeaders.add("Set-Cookie", "jieqiSearchCss=css-$guards; Path=/")
+                    exchange.respond(200, "body{}", "text/css")
+                }
+                query.startsWith("search_guard=redeem&r=") -> {
+                    val redeem = ++redeems
+                    if (issueTicket(redeem)) {
+                        availableTickets += redeem
+                        exchange.responseHeaders.add("Set-Cookie", "jieqiSearchTicket=ticket-$redeem; Path=/")
+                    }
+                    exchange.respond(200)
+                }
+                else -> {
+                    val ticket = exchange.requestHeaders.getFirst("Cookie").orEmpty()
+                        .removePrefix("jieqiSearchTicket=ticket-").toIntOrNull()
+                    if (ticket == null || !availableTickets.remove(ticket)) {
+                        exchange.respond(200, "")
+                    } else {
+                        exchange.respondToPage(exchange.requestURI.path, ticket)
+                    }
+                }
+            }
+        }
+    }
+
+    private fun assertGuardPairs(site: LinovelibHttpTestSite, vararg expected: Int) {
+        val redeems = site.requests.filter { it.query?.startsWith("search_guard=redeem&r=") == true }
+        assertEquals(expected.map { guard ->
+            mapOf("night" to "0", "jieqiSearchJs" to "js-$guard", "jieqiSearchCss" to "css-$guard")
+        }, redeems.map { it.cookies })
+    }
+
+    private fun assertTickets(site: LinovelibHttpTestSite, vararg expected: Int) {
+        assertEquals(expected.map { mapOf("jieqiSearchTicket" to "ticket-$it") }, resultRequests(site).map { it.cookies })
+    }
+
+    private fun resultRequests(site: LinovelibHttpTestSite) =
+        site.requests.filter { it.query?.startsWith("search_guard=") != true }
 }

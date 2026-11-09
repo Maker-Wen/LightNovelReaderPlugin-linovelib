@@ -44,28 +44,30 @@ class LinovelibBookDetailsHostTest {
     }
 
     @Test
-    fun searchAndOrdinaryDetailsShareAcceptedMetadataButHaveDifferentFallbacks() = runBlocking {
-        var html = detail("Search detail")
+    fun directSearchDefersTheDetailRequestToNavigation() = runBlocking {
+        val requests = mutableListOf<String>()
         val events = mutableListOf<String>()
-        val source = source(LinovelibMetadataStore(), events) { html }
+        val source = source(LinovelibMetadataStore(), events) { url ->
+            requests += url
+            detail("Full detail")
+        }
         val search = source.searchProvider
-        assertTrue(search.search(search.searchTypes.single(), "1").toList().first() is SearchResult.MultipleBook)
-        html = "<html>Verification required</html>"
-        assertEquals("Search detail", source.getBookInformation("1").title)
-        assertTrue(search.search(search.searchTypes.single(), "1").toList().first() is SearchResult.SingleBook)
+        val result = search.search(search.searchTypes.single(), "1").toList().first() as SearchResult.SingleBook
+        assertEquals("1", result.bookId)
+        assertTrue(requests.isEmpty())
+        assertEquals("Full detail", source.getBookInformation(result.bookId).title)
+        assertEquals(listOf(LinovelibUrls.book(LinovelibUrls.HOST, "1")), requests)
         assertFalse(events.any { it.contains("ERROR") })
     }
 
     @Test
-    fun ordinaryAndDirectCancellationPropagatesWithoutFallbackOrFailureLog() = runBlocking {
+    fun detailCancellationPropagatesWithoutFallbackOrFailureLog() = runBlocking {
         val metadata = LinovelibMetadataStore()
         metadata.rememberBooks(listOf(ParsedExploreBook("1", "Summary", "", "")))
         val cancelled = CancellationException("Cancelled")
         val events = mutableListOf<String>()
         val source = source(metadata, events) { throw cancelled }
         assertSame(cancelled, runCatching { source.getBookInformation("1") }.exceptionOrNull())
-        val search = source.searchProvider
-        assertSame(cancelled, runCatching { search.search(search.searchTypes.single(), "1").toList() }.exceptionOrNull())
         assertFalse(events.any { it.contains("ERROR") })
         assertNull(metadata.bookInformation("1"))
     }

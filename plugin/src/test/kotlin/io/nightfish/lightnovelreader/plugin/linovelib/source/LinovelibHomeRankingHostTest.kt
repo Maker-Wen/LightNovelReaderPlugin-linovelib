@@ -19,7 +19,7 @@ class LinovelibHomeRankingHostTest {
         val provider = LinovelibExplorePageProvider(
             htmlLoader = { url -> requested += url; html },
             parser = LinovelibHtmlParser(),
-            searchBookIds = { flowOf(SearchResult.End()) },
+            searchRelated = { flowOf(SearchResult.End()) },
             metadata = metadata
         )
         val rows = provider.exploreTapPageDataSourceMap.values.single { it.title == "推荐" }

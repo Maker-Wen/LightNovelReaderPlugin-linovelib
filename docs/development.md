@@ -79,10 +79,10 @@ python3 scripts/run-host-tests.py --serial emulator-5556 --no-build
 ### 定位测试入口
 
 - 标签回调：`LinovelibHostDataSourceHostTest` 从实际宿主接口反射调用作者／标签回调，覆盖委托对象、暂停函数结果、取消传播及空标签；真实导航图与书单展示仍需 UI 点击验证。
-- 分页：`LinovelibExplorePageProviderTest`、`LinovelibPaginationSessionTest`、`LinovelibRelatedSearchTest`。
-- 列表页识别：`LinovelibListPageTest` 覆盖统一解析结果、分页信息，以及搜索和展开页的共同识别约定；栏目投影由 `LinovelibMetadataFlowHostTest` 覆盖。
+- 分页由 `LinovelibExplorePageProviderHostTest`、`LinovelibPaginationSessionHostTest`、`LinovelibRelatedSearchHostTest` 和 `LinovelibSearchPaginationHostTest` 覆盖。
+- `LinovelibListPageTest` 覆盖列表解析与分页信息。`LinovelibListPageHostTest` 验证搜索和展开页对列表结果的处理，`LinovelibMetadataFlowHostTest` 覆盖栏目投影。
 - HTTP：`LinovelibHttpClientTest`、`LinovelibHttpClientRequestTest`、`LinovelibChapterHttpTest`、`LinovelibChapterRedirectTest`。
-- 元数据与映射：`LinovelibMetadataStoreTest`、`LinovelibMetadataFlowTest`、`LinovelibBookDetailsTest`、`LinovelibBookDetailsHostTest`、`LinovelibBookMappingHostTest`、`LinovelibMetadataFlowHostTest`。
+- 元数据与映射：`LinovelibMetadataStoreTest`、`LinovelibBookDetailsTest`、`LinovelibBookDetailsHostTest`、`LinovelibBookMappingHostTest`、`LinovelibMetadataFlowHostTest`。
 - 迁入：`MigrationPlannerTest`、`MigrationSnapshotCodecTest`、`MigrationReceiptTest`、`MigrationMessagesTest`、`LinovelibMigrationSessionTest` 等覆盖规则、归属、凭据、用户提示与会话；`MigrationBodyHostTest` 覆盖实际宿主正文及日期。快照夹具位于 `plugin/src/test/resources/migration/`。
 
 测试源码统一位于 [plugin/src/test](../plugin/src/test)。已核对的执行结果见 [最近验收基线](#最近验收基线)，不以测试声明数量代替执行结果。

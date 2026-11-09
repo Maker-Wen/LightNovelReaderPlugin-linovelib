@@ -13,7 +13,6 @@ class LinovelibMetadataStoreTest {
     private val details = LinovelibBookDetails(
         htmlLoader = { error("Test supplies HTML directly") },
         parser = parser,
-        diagnostics = LinovelibDiagnostics { _, _, _, _ -> },
         metadata = metadata
     )
 

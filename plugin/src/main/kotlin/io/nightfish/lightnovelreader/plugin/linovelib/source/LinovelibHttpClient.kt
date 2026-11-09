@@ -27,25 +27,47 @@ internal class LinovelibHttpClient(
     private val offlineStateFlow = MutableStateFlow(false)
     val isOffLineFlow: StateFlow<Boolean> = offlineStateFlow.asStateFlow()
     private val sessionCookies = mutableMapOf<String, String>()
+    private val parser = LinovelibHtmlParser(host)
+    private val defaultWenkuUrl = LinovelibUrls.wenku(host, "lastupdate", 1)
+    private val homepage = LinovelibRecentHtml(accepts = { parser.parseExploreRows(it).isNotEmpty() })
+    private val defaultWenku = LinovelibRecentHtml(accepts = { parser.parseListPage(it) != null })
 
-    suspend fun checkOffline(): Boolean = withContext(Dispatchers.IO) {
+    suspend fun checkOffline(): Boolean = checkHomepage(allowCached = false)
+
+    suspend fun checkStartupOffline(): Boolean = checkHomepage(allowCached = !offlineStateFlow.value)
+
+    private suspend fun checkHomepage(allowCached: Boolean): Boolean = withContext(Dispatchers.IO) {
+        var performedProbe = false
         try {
-            executeRequest(
-                url = host,
-                userAgent = USER_AGENT,
-                referrer = host,
-                availabilityCheck = true
-            )
+            homepage.load(allowCached) {
+                performedProbe = true
+                loadPlainHtml(host, availabilityCheck = true)
+            }
             false
         } catch (_: IOException) {
-            true
+            if (performedProbe || offlineStateFlow.value) return@withContext true
+            // A failed recommendation load did not publish availability. Probe normally so
+            // the result is ordered with other network responses by the request coordinator.
+            try {
+                loadPlainHtml(host, availabilityCheck = true)
+                false
+            } catch (_: IOException) {
+                true
+            }
         }
     }
 
-    suspend fun loadHtml(url: String): String = executeRequest(
+    suspend fun loadHtml(url: String): String = when (url) {
+        host -> homepage.load(allowCached = !offlineStateFlow.value) { loadPlainHtml(url) }
+        defaultWenkuUrl -> defaultWenku.load { loadPlainHtml(url) }
+        else -> loadPlainHtml(url)
+    }
+
+    private suspend fun loadPlainHtml(url: String, availabilityCheck: Boolean = false): String = executeRequest(
         url = url,
         userAgent = USER_AGENT,
-        referrer = host
+        referrer = host,
+        availabilityCheck = availabilityCheck
     ).html
 
     suspend fun loadChapterPage(url: String): LinovelibHtmlResponse = executeRequest(
@@ -56,16 +78,44 @@ internal class LinovelibHttpClient(
         cacheControl = true
     ).let { LinovelibHtmlResponse(it.raw.url().toString(), it.html) }
 
-    suspend fun search(url: String): LinovelibHtmlResponse = executeRequest(
+    fun newSearchLoader(): suspend (String) -> LinovelibHtmlResponse {
+        var searchGuards: Map<String, String>? = null
+        return { url ->
+            var reusableGuards = searchGuards
+            var usedCachedGuards = false
+            suspend fun requestPage(): LinovelibHtmlResponse = loadSearchPage(url) {
+                val cachedGuards = reusableGuards
+                // Only the first attempt may reuse a pair. A retry takes the fresh path.
+                reusableGuards = null
+                val ticketFromCachedGuards = cachedGuards?.let { redeemSearchTicket(it) }.orEmpty()
+                usedCachedGuards = ticketFromCachedGuards.isNotEmpty()
+                val ticket = ticketFromCachedGuards.ifEmpty {
+                    val freshGuards = loadSearchGuards()
+                    redeemSearchTicket(freshGuards).also {
+                        require(it.isNotEmpty()) { "Missing jieqiSearchTicket search cookie" }
+                        searchGuards = freshGuards
+                    }
+                }
+                diagnostics.info("SEARCH_GUARD_OK", mapOf("url" to url))
+                ticket
+            }
+
+            val response = requestPage()
+            // The site can return HTTP 200 with an empty body when it rejects a ticket.
+            if (usedCachedGuards && response.html.isBlank()) requestPage() else response
+        }
+    }
+
+    private suspend fun loadSearchPage(url: String, ticket: suspend () -> String): LinovelibHtmlResponse = executeRequest(
         url = url,
         userAgent = LINOVELIB_CONTENT_USER_AGENT,
         referrer = "${host}/",
-        cookies = { mapOf("jieqiSearchTicket" to redeemSearchTicket(url)) },
+        cookies = { mapOf("jieqiSearchTicket" to ticket()) },
         cacheControl = true,
         includeSessionCookies = false
     ).let { LinovelibHtmlResponse(it.raw.url().toString(), it.html) }
 
-    private suspend fun redeemSearchTicket(url: String): String {
+    private suspend fun loadSearchGuards(): Map<String, String> {
         val guardJs = executeRequest(
             url = "${host}/search.html?search_guard=js",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
@@ -85,23 +135,19 @@ internal class LinovelibHttpClient(
         )
         val cssToken = guardCss.raw.cookies()["jieqiSearchCss"].orEmpty()
         require(cssToken.isNotEmpty()) { "Missing jieqiSearchCss search guard cookie" }
+        return LinovelibSearchGuard.guardCookies(jsToken, cssToken)
+    }
 
+    private suspend fun redeemSearchTicket(guards: Map<String, String>): String {
         val redeem = executeRequest(
             url = "${host}/search.html?search_guard=redeem&r=${System.currentTimeMillis()}",
             userAgent = LINOVELIB_CONTENT_USER_AGENT,
             referrer = "${host}/",
-            cookies = { LinovelibSearchGuard.guardCookies(jsToken, cssToken) },
+            cookies = { guards },
             cacheControl = true,
             includeSessionCookies = false
         )
-        val ticketToken = redeem.raw.cookies()["jieqiSearchTicket"].orEmpty()
-        require(ticketToken.isNotEmpty()) { "Missing jieqiSearchTicket search cookie" }
-        diagnostics.info(
-            "SEARCH_GUARD_OK",
-            mapOf("url" to url)
-        )
-
-        return ticketToken
+        return redeem.raw.cookies()["jieqiSearchTicket"].orEmpty()
     }
 
     private suspend fun executeRequest(

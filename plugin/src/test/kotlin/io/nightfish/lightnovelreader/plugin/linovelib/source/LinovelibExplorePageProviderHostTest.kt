@@ -22,9 +22,9 @@ import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class LinovelibExplorePageProviderTest {
+class LinovelibExplorePageProviderHostTest {
     @Test
-    fun `each host page gets independent filters while a map snapshot keeps stable instances`() {
+    fun eachHostPageGetsIndependentFiltersWhileAMapSnapshotKeepsStableInstances() {
         val provider: ExplorePageProvider.DefaultExplorePageProvider = provider {
             error("Obtaining a page must not load HTML")
         }
@@ -51,7 +51,7 @@ class LinovelibExplorePageProviderTest {
     }
 
     @Test
-    fun `registration and mutations of one map do not change other snapshots`() {
+    fun registrationAndMutationsOfOneMapDoNotChangeOtherSnapshots() {
         val provider = provider { error("Creating a snapshot must not load HTML") }
         val before = provider.exploreExpandedPageDataSourceMap
         val relatedId = provider.registerRelatedPage("未知标签")
@@ -69,7 +69,7 @@ class LinovelibExplorePageProviderTest {
     }
 
     @Test
-    fun `learned related URLs keep the id and leave existing pages on their original target`() = runBlocking {
+    fun learnedRelatedURLsKeepTheIdAndLeaveExistingPagesOnTheirOriginalTarget() = runBlocking {
         val parser = LinovelibHtmlParser()
         val metadata = LinovelibMetadataStore()
         val requested = mutableListOf<String>()
@@ -80,7 +80,7 @@ class LinovelibExplorePageProviderTest {
                 """<a class="book-layout" href="/novel/100.html"><span class="book-title">Book</span></a>"""
             },
             parser = parser,
-            searchBookIds = { keyword -> searched += keyword; flowOf(SearchResult.End()) },
+            searchRelated = { keyword -> searched += keyword; flowOf(SearchResult.End()) },
             metadata = metadata
         )
         val id = provider.registerRelatedPage("科幻")
@@ -113,7 +113,7 @@ class LinovelibExplorePageProviderTest {
     }
 
     @Test
-    fun `author tag and publisher links all create independent pages`() = runBlocking {
+    fun authorTagAndPublisherLinksAllCreateIndependentPages() = runBlocking {
         val parser = LinovelibHtmlParser()
         val metadata = LinovelibMetadataStore()
         parser.parseBookInformation("100", """
@@ -144,7 +144,7 @@ class LinovelibExplorePageProviderTest {
     }
 
     @Test
-    fun `concurrent registrations keep colliding titles on separate stable ids`() = runBlocking {
+    fun concurrentRegistrationsKeepCollidingTitlesOnSeparateStableIds() = runBlocking {
         withTimeout(5_000) {
             assertEquals("FB".hashCode(), "Ea".hashCode())
             val provider = provider { error("Registration must not load HTML") }
@@ -170,7 +170,7 @@ class LinovelibExplorePageProviderTest {
     }
 
     @Test
-    fun `every tab clears previously displayed rows before its html request completes`() = runBlocking {
+    fun everyTabClearsPreviouslyDisplayedRowsBeforeItsHtmlRequestCompletes() = runBlocking {
         for (tabTitle in listOf("推荐", "排行", "文库")) {
             val requestStarted = CompletableDeferred<Unit>()
             val htmlResponse = CompletableDeferred<String>()
@@ -202,7 +202,7 @@ class LinovelibExplorePageProviderTest {
     private fun provider(htmlLoader: suspend (String) -> String) = LinovelibExplorePageProvider(
         htmlLoader = htmlLoader,
         parser = LinovelibHtmlParser(),
-        searchBookIds = { flowOf(SearchResult.End()) },
+        searchRelated = { flowOf(SearchResult.End()) },
         metadata = LinovelibMetadataStore()
     )
 }

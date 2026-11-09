@@ -1,14 +1,19 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ThreadContextElement
 import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.Closeable
@@ -19,9 +24,16 @@ import java.net.ServerSocket
 import java.net.SocketException
 import java.net.URI
 import java.nio.file.Files
+import java.time.Instant
+import java.time.ZoneOffset
+import java.time.format.DateTimeFormatter
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.ContinuationInterceptor
+import kotlin.coroutines.CoroutineContext
 import kotlin.coroutines.cancellation.CancellationException
 
 // Signature fixtures exercise HTTP transport, size/MIME checks and file caching.
@@ -39,9 +51,61 @@ class LinovelibStoredImageTest {
     }
 
     @Test
+    fun retryAfterHttpDateDelaysTheSecondRequest() = runBlocking {
+        val retryAtMillis = AtomicLong()
+        val retrySentAtMillis = AtomicLong()
+        LinovelibHttpTestSite { exchange ->
+            if (retryAtMillis.get() == 0L) {
+                val retryAt = Instant.ofEpochSecond(Instant.now().epochSecond + 3)
+                retryAtMillis.set(retryAt.toEpochMilli())
+                exchange.responseHeaders.set(
+                    "Retry-After", DateTimeFormatter.RFC_1123_DATE_TIME.format(retryAt.atZone(ZoneOffset.UTC))
+                )
+                exchange.respond(429)
+            } else {
+                retrySentAtMillis.set(System.currentTimeMillis())
+                exchange.respond(200, "GIF89a", "image/gif")
+            }
+        }.use { site ->
+            val image = withTimeout(6_000) { LinovelibImageStore.downloadImage("${site.host}/dated.gif") }
+
+            assertEquals(2, site.requests.size)
+            assertTrue(retrySentAtMillis.get() + 2 >= retryAtMillis.get())
+            assertArrayEquals("GIF89a".toByteArray(), image.bytes)
+        }
+    }
+
+    @Test
+    fun finalRateLimitStillDelaysTheNextImageOnTheSameHost() = runBlocking {
+        val attempts = AtomicInteger()
+        val lastRateLimitAt = AtomicLong()
+        val nextRequestAt = AtomicLong()
+        LinovelibHttpTestSite { exchange ->
+            if (exchange.requestURI.path == "/limited.gif") {
+                val finalAttempt = attempts.incrementAndGet() == 2
+                if (finalAttempt) lastRateLimitAt.set(System.nanoTime())
+                exchange.responseHeaders.set("Retry-After", if (finalAttempt) "1" else "0")
+                exchange.respond(429)
+            } else {
+                nextRequestAt.set(System.nanoTime())
+                exchange.respond(200, "GIF89a", "image/gif")
+            }
+        }.use { site ->
+            val failure = runCatching { LinovelibImageStore.downloadImage("${site.host}/limited.gif") }.exceptionOrNull()
+            assertTrue(failure is IOException)
+            assertEquals(2, attempts.get())
+
+            val image = withTimeout(4_000) { LinovelibImageStore.downloadImage("${site.host}/next.gif") }
+            val waitMillis = TimeUnit.NANOSECONDS.toMillis(nextRequestAt.get() - lastRateLimitAt.get())
+            assertTrue("Next image waited only $waitMillis ms", waitMillis >= 990)
+            assertArrayEquals("GIF89a".toByteArray(), image.bytes)
+        }
+    }
+
+    @Test
     fun `retries only temporary http errors and stops after two attempts`() = runBlocking {
         for (status in listOf(400, 401, 403, 404, 410, 422, 408, 425, 429, 500, 503, 599)) {
-            ImageServer { response(status) }.use { server ->
+            ImageServer { response(status, retryAfter = if (status == 429) "0" else null) }.use { server ->
                 val failure = runCatching {
                     LinovelibImageStore.downloadImage(server.url)
                 }.exceptionOrNull()
@@ -50,6 +114,56 @@ class LinovelibStoredImageTest {
                 assertEquals("Image server returned HTTP $status", failure?.message)
                 val expectedAttempts = if (status in listOf(408, 425, 429) || status in 500..599) 2 else 1
                 assertEquals("HTTP $status attempts", expectedAttempts, server.requests.get())
+            }
+        }
+    }
+
+    @Test
+    fun redirectToCoolingHostWaitsAlongWithTheRetry() = runBlocking {
+        withTimeout(5_000) {
+            val firstLimitedAt = CompletableDeferred<Long>()
+            val targetArrivals = mutableMapOf<String, Long>()
+            val targetAttempts = AtomicInteger()
+            LinovelibHttpTestSite { exchange ->
+                val path = exchange.requestURI.path
+                if (path == "/a.gif" && targetAttempts.incrementAndGet() == 1) {
+                    exchange.responseHeaders.set("Retry-After", "1")
+                    firstLimitedAt.complete(System.nanoTime())
+                    exchange.sendResponseHeaders(429, -1)
+                } else {
+                    synchronized(targetArrivals) { targetArrivals[path] = System.nanoTime() }
+                    exchange.respond(200, "GIF89a", "image/gif")
+                }
+            }.use { target ->
+                LinovelibHttpTestSite { exchange ->
+                    exchange.responseHeaders.set("Location", "${target.host}/b.gif")
+                    exchange.sendResponseHeaders(302, -1)
+                }.use { origin ->
+                    val aRead429 = CompletableDeferred<Unit>()
+                    val a = async(ObserveIoStep(aRead429)) {
+                        LinovelibImageStore.downloadImage("${target.host}/a.gif")
+                    }
+                    aRead429.await()
+                    assertTrue(firstLimitedAt.isCompleted)
+                    val limitedAt = firstLimitedAt.await()
+
+                    val b = async {
+                        val differentHost = origin.host.replace("127.0.0.1", "localhost")
+                        LinovelibImageStore.downloadImage("$differentHost/b.gif")
+                    }
+
+                    assertArrayEquals("GIF89a".toByteArray(), a.await().bytes)
+                    assertArrayEquals("GIF89a".toByteArray(), b.await().bytes)
+                    assertEquals(listOf("/b.gif"), origin.requests.map { it.path })
+                    assertEquals(2, targetAttempts.get())
+                    assertEquals(3, target.requests.size)
+                    synchronized(targetArrivals) {
+                        for (path in listOf("/a.gif", "/b.gif")) {
+                            val elapsed = (targetArrivals.getValue(path) - limitedAt) / 1_000_000
+                            assertTrue("$path reached the limited host after only ${elapsed}ms", elapsed >= 990)
+                        }
+                    }
+                }
             }
         }
     }
@@ -254,8 +368,150 @@ class LinovelibStoredImageTest {
         Unit
     }
 
-    private fun response(status: Int, body: String = ""): String =
-        "HTTP/1.1 $status Test\r\nConnection: close\r\nContent-Type: image/gif\r\nContent-Length: ${body.length}\r\n\r\n$body"
+    @Test
+    fun overlappingLoadsShareOneDownloadAndLeaveADiskCacheHit() = runBlocking {
+        val directory = Files.createTempDirectory("linovelib-image-overlap").toFile()
+        try {
+            withTimeout(5_000) {
+                val started = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val downloads = AtomicInteger()
+                val gif = "GIF89a".toByteArray()
+                val blocks = listOf(ParsedContentBlock.Image("https://img.readpai.com/overlap.gif"))
+                val store = LinovelibImageStore(
+                    directory = directory,
+                    downloader = {
+                        downloads.incrementAndGet()
+                        started.complete(Unit)
+                        release.await()
+                        DownloadedLinovelibImage(gif, "image/gif")
+                    },
+                    diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
+                )
+                val owner = async { store.localize(blocks) }
+                started.await()
+                val waiter = startOverlappingLoad(store, blocks)
+                assertFalse(waiter.isCompleted)
+                assertEquals(1, downloads.get())
+
+                release.complete(Unit)
+                val result = owner.await()
+                assertEquals(result, waiter.await())
+                val localFile = File(URI((result.single() as ParsedContentBlock.Image).url))
+                assertArrayEquals(gif, localFile.readBytes())
+                assertEquals(listOf(localFile), directory.listFiles().orEmpty().toList())
+                assertEquals(result, store.localize(blocks))
+                assertEquals(1, downloads.get())
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun overlappingFailureIsSharedAndTheNextLoadCanRetry() = runBlocking {
+        val directory = Files.createTempDirectory("linovelib-image-overlap-failure").toFile()
+        try {
+            withTimeout(5_000) {
+                val started = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val downloads = AtomicInteger()
+                val blocks = listOf(ParsedContentBlock.Image("https://img.readpai.com/retry.gif"))
+                val store = LinovelibImageStore(
+                    directory = directory,
+                    downloader = {
+                        if (downloads.incrementAndGet() == 1) {
+                            started.complete(Unit)
+                            release.await()
+                            throw IOException("Download failed")
+                        }
+                        DownloadedLinovelibImage("GIF89a".toByteArray(), "image/gif")
+                    },
+                    diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
+                )
+                val owner = async { store.localize(blocks) }
+                started.await()
+                val waiter = startOverlappingLoad(store, blocks)
+                assertEquals(1, downloads.get())
+
+                release.complete(Unit)
+                assertTrue(owner.await().isEmpty())
+                assertTrue(waiter.await().isEmpty())
+                assertTrue(directory.listFiles().orEmpty().isEmpty())
+                val recovered = store.localize(blocks).single() as ParsedContentBlock.Image
+                assertArrayEquals("GIF89a".toByteArray(), File(URI(recovered.url)).readBytes())
+                assertEquals(2, downloads.get())
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun waiterCancellationLeavesDownloadRunningAndOwnerCancellationAllowsTakeover() = runBlocking {
+        val directory = Files.createTempDirectory("linovelib-image-overlap-cancel").toFile()
+        try {
+            withTimeout(5_000) {
+                val started = CompletableDeferred<Unit>()
+                val downloads = AtomicInteger()
+                val blocks = listOf(ParsedContentBlock.Image("https://img.readpai.com/cancel.gif"))
+                val store = LinovelibImageStore(
+                    directory = directory,
+                    downloader = {
+                        if (downloads.incrementAndGet() == 1) {
+                            started.complete(Unit)
+                            awaitCancellation()
+                        }
+                        DownloadedLinovelibImage("GIF89a".toByteArray(), "image/gif")
+                    },
+                    diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
+                )
+                val owner = async { store.localize(blocks) }
+                started.await()
+                val cancelledWaiter = startOverlappingLoad(store, blocks)
+                cancelledWaiter.cancelAndJoin()
+                assertTrue(owner.isActive)
+                assertEquals(1, downloads.get())
+
+                val activeWaiter = startOverlappingLoad(store, blocks)
+                owner.cancelAndJoin()
+                val recovered = activeWaiter.await().single() as ParsedContentBlock.Image
+                assertArrayEquals("GIF89a".toByteArray(), File(URI(recovered.url)).readBytes())
+                assertEquals(2, downloads.get())
+            }
+        } finally {
+            directory.deleteRecursively()
+        }
+    }
+
+    private suspend fun CoroutineScope.startOverlappingLoad(
+        store: LinovelibImageStore,
+        blocks: List<ParsedContentBlock>
+    ): Deferred<List<ParsedContentBlock>> {
+        val ioStepFinished = CompletableDeferred<Unit>()
+        val load = async(ObserveIoStep(ioStepFinished)) { store.localize(blocks) }
+        ioStepFinished.await()
+        return load
+    }
+
+    // The marker is inherited by localize's IO child and reports when that child first yields.
+    private class ObserveIoStep(
+        private val finished: CompletableDeferred<Unit>
+    ) : ThreadContextElement<Unit>, AbstractCoroutineContextElement(Key) {
+        companion object Key : CoroutineContext.Key<ObserveIoStep>
+
+        override fun updateThreadContext(context: CoroutineContext) = Unit
+
+        override fun restoreThreadContext(context: CoroutineContext, oldState: Unit) {
+            if (context[ContinuationInterceptor] == Dispatchers.IO) finished.complete(Unit)
+        }
+    }
+
+    private fun response(status: Int, body: String = "", retryAfter: String? = null): String {
+        val retryAfterHeader = retryAfter?.let { "Retry-After: $it\r\n" }.orEmpty()
+        return "HTTP/1.1 $status Test\r\nConnection: close\r\nContent-Type: image/gif\r\n" +
+            "Content-Length: ${body.length}\r\n$retryAfterHeader\r\n$body"
+    }
 
     private class ImageServer(respond: (Int) -> String) : Closeable {
         private val server = ServerSocket(0, 0, InetAddress.getByName("127.0.0.1"))

@@ -13,7 +13,7 @@ import kotlinx.coroutines.flow.flow
 internal class LinovelibExplorePageProvider(
     private val htmlLoader: suspend (String) -> String,
     private val parser: LinovelibHtmlParser,
-    private val searchBookIds: (String) -> Flow<SearchResult>,
+    private val searchRelated: (String) -> Flow<SearchResult>,
     private val host: String = LinovelibUrls.HOST,
     private val metadata: LinovelibMetadataStore
 ) : AbstractDefaultExplorePageProvider() {
@@ -107,7 +107,7 @@ internal class LinovelibExplorePageProvider(
 
     private fun createExpandedPage(id: String, definition: ExpandedPageDefinition): ExploreExpandedPageDataSource {
         val targetUrl = definition.targetUrl
-            ?: return LinovelibRelatedExpandedPageDataSource(searchBookIds, definition.title)
+            ?: return LinovelibRelatedExpandedPageDataSource(searchRelated, definition.title)
         val wenkuFilters = if (id == WENKU_PAGE_ID) LinovelibWenkuFilters(host) else null
         return LinovelibLinkedExpandedPageDataSource(
             displayTag = definition.title,

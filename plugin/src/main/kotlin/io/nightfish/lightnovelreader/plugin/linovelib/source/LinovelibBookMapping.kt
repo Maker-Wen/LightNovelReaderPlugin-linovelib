@@ -14,12 +14,12 @@ internal fun ParsedExploreBook.toParsedBookInformation() = ParsedBookInformation
     subtitle = "",
     coverUrl = coverUrl,
     author = author,
-    description = "",
-    tags = emptyList(),
-    publishingHouse = "",
-    wordCount = 0,
+    description = description,
+    tags = tags,
+    publishingHouse = publishingHouse,
+    wordCount = wordCount,
     lastUpdated = LinovelibDates.unknownLocalDate,
-    isComplete = false
+    isComplete = isComplete
 )
 
 internal fun ParsedBookInformation.toMutableBookInformation(): MutableBookInformation =

@@ -11,9 +11,9 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
 
-class LinovelibMetadataFlowTest {
+class LinovelibExpandedMetadataHostTest {
     @Test
-    fun `expanded pages record summaries before removing duplicate results`() = runBlocking {
+    fun expandedPagesRecordSummariesBeforeRemovingDuplicateResults() = runBlocking {
         withTimeout(5_000) {
             val metadata = LinovelibMetadataStore()
             val first = CompletableDeferred<Unit>()
@@ -31,7 +31,7 @@ class LinovelibMetadataFlowTest {
             val ids = mutableListOf<String>()
             val collector = launch {
                 page.getResultFlow().collect {
-                    if (it is SearchResult.SingleBook) { ids += it.bookId; first.complete(Unit) }
+                    if (it is SearchResult.MultipleBook) { ids += it.bookInformation.id; first.complete(Unit) }
                 }
             }
             first.await()
@@ -44,14 +44,14 @@ class LinovelibMetadataFlowTest {
     }
 
     @Test
-    fun `evicted targets leave registered page definitions usable but unknown tags use search`() = runBlocking {
+    fun evictedTargetsLeaveRegisteredPageDefinitionsUsableButUnknownTagsUseSearch() = runBlocking {
         val metadata = LinovelibMetadataStore()
         val requested = mutableListOf<String>()
         val searched = mutableListOf<String>()
         val provider = LinovelibExplorePageProvider(
             htmlLoader = { requested += it; "<ol class=\"book-ol\"></ol>" },
             parser = LinovelibHtmlParser(),
-            searchBookIds = { searched += it; flowOf(SearchResult.End()) }, metadata = metadata
+            searchRelated = { searched += it; flowOf(SearchResult.End()) }, metadata = metadata
         )
         val book = ParsedExploreBook("1", "Book", "", "").toParsedBookInformation()
         metadata.rememberBook(book.copy(relatedLinks = mapOf("Tag" to "${LinovelibUrls.HOST}/wenku/known/1.html")))

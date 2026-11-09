@@ -571,13 +571,54 @@ class LinovelibHtmlParserTest {
     }
 
     @Test
-    fun parseListPagePreservesCapturedTitleEndingWithEllipsis() {
+    fun parseListPagePreservesCapturedRankingTitleAndSynopsis() {
         val html = requireNotNull(javaClass.getResource("/html/list-title-3343.html")).readText()
 
         val book = requireNotNull(parser.parseListPage(html)).books.single()
 
         assertEquals("3343", book.id)
         assertEquals("妹妹是不能当女友的，可是……", book.title)
+        assertEquals("这是一段无论发生什么最终都“绝对”会与世界上最可爱的妹妹结为连理的恋爱喜剧！ 樱羽雪季是是世界上......", book.description)
+        assertEquals(0, book.wordCount)
+        assertFalse(book.isComplete)
+    }
+
+    @Test
+    fun parseListPageReadsSearchAndLibraryMetadataFromTheirOwnBadges() {
+        val html = """
+            <ol class="book-ol">
+              <li class="book-li"><a class="book-layout" href="/novel/1.html">
+                <h4 class="book-title">Search <span class="hot">Book</span></h4>
+                <p class="book-desc">Search synopsis<br>Second line</p>
+                <div class="book-meta-r"><span class="tag-small-group">
+                  <em class="tag-small red">奇幻 冒险</em><em class="tag-small yellow">角川文库</em>
+                  <em class="tag-small gray">完结</em>
+                </span></div>
+              </a></li>
+              <li class="book-li"><a class="book-layout" href="/novel/2.html">
+                <h4 class="book-title">Library Book</h4>
+                <p class="book-desc">Library synopsis</p>
+                <div class="book-meta-r"><span class="tag-small-group">
+                  <em class="tag-small yellow">科幻  战斗</em><em class="tag-small red">连载</em>
+                  <em class="tag-small blue">38.5万</em>
+                </span></div>
+              </a></li>
+            </ol>
+        """.trimIndent()
+
+        val (search, library) = requireNotNull(parser.parseListPage(html)).books
+
+        assertEquals("Search Book", search.title)
+        assertEquals("Search synopsis\nSecond line", search.description)
+        assertEquals(listOf("奇幻", "冒险"), search.tags)
+        assertEquals("角川文库", search.publishingHouse)
+        assertEquals(0, search.wordCount)
+        assertTrue(search.isComplete)
+        assertEquals("Library synopsis", library.description)
+        assertEquals(listOf("科幻", "战斗"), library.tags)
+        assertEquals("", library.publishingHouse)
+        assertEquals(385_000, library.wordCount)
+        assertFalse(library.isComplete)
     }
 
     @Test

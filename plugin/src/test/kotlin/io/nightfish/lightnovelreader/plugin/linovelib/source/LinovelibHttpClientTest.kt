@@ -12,8 +12,31 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 
 class LinovelibHttpClientTest {
+    @Test
+    fun `startup shares the homepage but explicit offline checks refresh it`() = runBlocking {
+        val homepage = javaClass.getResource("/html/home-modules-20261027.html")!!.readText()
+        val status = AtomicInteger(200)
+        LinovelibHttpTestSite { exchange -> exchange.respond(status.get(), homepage) }.use { site ->
+            val client = site.client()
+            assertFalse(client.checkStartupOffline())
+            assertEquals(homepage, client.loadHtml(site.host))
+            assertEquals(1, site.requests.size)
+
+            status.set(404)
+            assertTrue(client.checkOffline())
+            assertTrue(client.isOffLineFlow.value)
+            assertEquals(2, site.requests.size)
+
+            status.set(200)
+            assertEquals(homepage, client.loadHtml(site.host))
+            assertFalse(client.isOffLineFlow.value)
+            assertEquals(3, site.requests.size)
+        }
+    }
+
     @Test
     fun `an older failed probe cannot overwrite a later successful request`() = runBlocking {
         withTimeout(5_000) {

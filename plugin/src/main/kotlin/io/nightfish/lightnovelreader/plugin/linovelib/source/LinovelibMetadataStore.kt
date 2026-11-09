@@ -1,11 +1,17 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
+import io.nightfish.lightnovelreader.api.book.MutableBookInformation
+import io.nightfish.lightnovelreader.api.book.WordCount
+import java.util.WeakHashMap
+
 /** Disposable metadata for one source instance; independent of the host's content cache. */
 internal class LinovelibMetadataStore {
     private val books = linkedMapOf<String, ParsedBookInformation>()
     private val summaries = linkedMapOf<String, ParsedExploreBook>()
     private val relatedTargets = linkedMapOf<String, String>()
     private val volumeCovers = linkedMapOf<String, Map<String, String>>()
+    // The host retains each card for as long as its list needs it, even after the flow ends.
+    private val activeCards = WeakHashMap<MutableBookInformation, Boolean>()
 
     @Synchronized
     fun rememberCatalog(catalog: ParsedCatalog) {
@@ -30,11 +36,23 @@ internal class LinovelibMetadataStore {
         book.relatedLinks.forEach { (tag, target) ->
             relatedTargets.remember(tag, target)
         }
+        activeCards.forEach { (card, needsWordCount) ->
+            if (card.id == book.id) card.applyDetailFields(book, needsWordCount)
+        }
     }
 
     @Synchronized
     fun rememberBooks(books: List<ParsedExploreBook>) {
         books.forEach { summaries.remember(it.id, it) }
+    }
+
+    @Synchronized
+    fun createListCard(book: ParsedExploreBook): MutableBookInformation {
+        val card = book.toParsedBookInformation().toMutableBookInformation()
+        val needsWordCount = book.wordCount == 0
+        books[book.id]?.let { card.applyDetailFields(it, needsWordCount) }
+        activeCards[card] = needsWordCount
+        return card
     }
 
     @Synchronized
@@ -46,6 +64,11 @@ internal class LinovelibMetadataStore {
 
     @Synchronized
     fun relatedTarget(displayTag: String): String? = relatedTargets[displayTag]
+
+    private fun MutableBookInformation.applyDetailFields(book: ParsedBookInformation, needsWordCount: Boolean) {
+        if (book.lastUpdated != LinovelibDates.unknownLocalDate) lastUpdated = book.lastUpdated.atStartOfDay()
+        if (needsWordCount && book.wordCount > 0) wordCount = WordCount(book.wordCount)
+    }
 
     // Refresh write order explicitly. Reads must not prolong retention.
     private fun <T> LinkedHashMap<String, T>.remember(key: String, value: T) {

@@ -9,11 +9,10 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.yield
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-class LinovelibRelatedSearchTest {
+class LinovelibRelatedSearchHostTest {
     @Test
     fun emptyMiddlePagesContinueUsingTheFirstPagesLastPage() = runBlocking {
         val requested = mutableListOf<String>()
@@ -38,7 +37,7 @@ class LinovelibRelatedSearchTest {
         }
 
         assertEquals((1..3).map { LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", it) }, requested)
-        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id })
         assertTrue(results.none { it is SearchResult.Empty || it is SearchResult.Error })
         assertTrue(results.last() is SearchResult.End)
     }
@@ -63,7 +62,7 @@ class LinovelibRelatedSearchTest {
         }
 
         assertEquals((1..2).map { LinovelibUrls.wenku(LinovelibUrls.HOST, "lastupdate", it) }, requested)
-        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertEquals(listOf("1", "2"), results.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id })
         assertTrue(results.last() is SearchResult.End)
     }
 
@@ -81,7 +80,7 @@ class LinovelibRelatedSearchTest {
         val results = withTimeout(1_000) { page.getResultFlow().toList() }
 
         assertEquals(listOf(target), requested)
-        assertEquals(listOf("1"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertEquals(listOf("1"), results.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id })
         assertTrue(results.last() is SearchResult.End)
     }
 
@@ -100,7 +99,7 @@ class LinovelibRelatedSearchTest {
             val results = withTimeout(1_000) { page.getResultFlow().toList() }
 
             assertEquals(listOf(target), requested)
-            assertEquals(listOf("1"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+            assertEquals(listOf("1"), results.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id })
             assertTrue(results.none { it is SearchResult.Error })
             assertTrue(results.last() is SearchResult.End)
         }
@@ -115,39 +114,40 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `related fallback returns distinct ids without fetching details`() = runBlocking {
+    fun relatedFallbackReturnsListSummariesWithoutFetchingDetails() = runBlocking {
         val keywords = mutableListOf<String>()
         val details = mutableListOf<String>()
         val parser = LinovelibHtmlParser()
         val search = testSearchProvider(
-            htmlLoader = { url -> details += url; error("Related pages load their own details") },
+            htmlLoader = { url -> details += url; error("Unexpected detail request") },
             searchHtmlLoader = { keyword ->
                 keywords += keyword
-                LinovelibHtmlResponse("${LinovelibUrls.HOST}/search.html", """
-                    <ol class="book-ol">
-                      <li><a class="book-layout" href="/novel/100.html"><span class="book-title">One</span></a></li>
-                      <li><a class="book-layout" href="/novel/200.html"><span class="book-title">Two</span></a></li>
-                      <li><a class="book-layout" href="/novel/100.html"><span class="book-title">One</span></a></li>
-                    </ol>
-                """)
+                val html = if (keyword.endsWith("/Author_2.html")) searchPage(listOf("100", "200"))
+                else searchPage(listOf("100", "100"), "/search/Author_2.html")
+                LinovelibHtmlResponse(keyword, html)
             },
             parser = parser, diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
         )
-        val explore = LinovelibExplorePageProvider({ error("No known list link") }, parser, search::searchBookIds, metadata = LinovelibMetadataStore())
+        val explore = LinovelibExplorePageProvider({ error("No known list link") }, parser, search::searchRelated, metadata = LinovelibMetadataStore())
         val pageId = explore.registerRelatedPage("作者：\u3000 Author")
         val page = explore.exploreExpandedPageDataSourceMap.getValue(pageId)
 
         val results = page.getResultFlow().toList()
 
-        assertEquals(listOf(LinovelibUrls.search(LinovelibUrls.HOST, "Author")), keywords)
-        assertEquals(listOf("100", "200"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        assertEquals(listOf(
+            LinovelibUrls.search(LinovelibUrls.HOST, "Author"),
+            "${LinovelibUrls.HOST}/search/Author_2.html"
+        ), keywords)
+        val summaries = results.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation }
+        assertEquals(listOf("100", "200"), summaries.map { it.id })
+        assertEquals(listOf("Book 100", "Book 200"), summaries.map { it.title })
         assertEquals(3, results.size)
         assertTrue(results.last() is SearchResult.End)
         assertTrue(details.isEmpty())
     }
 
     @Test
-    fun `related id search trims author queries and handles direct and redirected books without detail requests`() = runBlocking {
+    fun relatedSearchTrimsAuthorQueriesAndReusesRedirectedDetailResponses() = runBlocking {
         for (keyword in listOf("3247", "${LinovelibUrls.HOST}/novel/3247.html", "SAO")) {
             val keywords = mutableListOf<String>()
             val details = mutableListOf<String>()
@@ -161,20 +161,22 @@ class LinovelibRelatedSearchTest {
             )
 
             val related = LinovelibRelatedExpandedPageDataSource(
-                search::searchBookIds, LinovelibRelatedSearch.authorDisplayTag(" \u3000$keyword \u2003")
+                search::searchRelated, LinovelibRelatedSearch.authorDisplayTag(" \u3000$keyword \u2003")
             )
             val results = related.getResultFlow().toList()
 
-            assertEquals("3247", (results.first() as SearchResult.SingleBook).bookId)
+            val summary = (results.first() as SearchResult.MultipleBook).bookInformation
+            assertEquals("3247", summary.id)
+            assertEquals("SAO", summary.title)
             assertEquals(2, results.size)
             assertTrue(results.last() is SearchResult.End)
-            assertEquals(if (keyword == "SAO") listOf(LinovelibUrls.search(LinovelibUrls.HOST, keyword)) else emptyList<String>(), keywords)
+            assertEquals(listOf(LinovelibUrls.search(LinovelibUrls.HOST, keyword)), keywords)
             assertTrue(details.isEmpty())
         }
     }
 
     @Test
-    fun `related id search distinguishes empty results and failures and propagates cancellation`() = runBlocking {
+    fun relatedSearchDistinguishesEmptyResultsAndFailuresAndPropagatesCancellation() = runBlocking {
         for (html in listOf("<ol class=book-ol></ol>", "<h1>Verification required</h1>", null)) {
             val search = testSearchProvider(
                 htmlLoader = { error("Unexpected detail request") },
@@ -183,7 +185,7 @@ class LinovelibRelatedSearchTest {
                 },
                 parser = LinovelibHtmlParser(), diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
             )
-            val results = search.searchBookIds("Author").toList()
+            val results = search.searchRelated("Author").toList()
             assertEquals(2, results.size)
             if (html?.startsWith("<ol") == true) assertTrue(results.first() is SearchResult.Empty)
             else assertTrue(results.first() is SearchResult.Error)
@@ -195,7 +197,7 @@ class LinovelibRelatedSearchTest {
             parser = LinovelibHtmlParser(), diagnostics = LinovelibDiagnostics { _, _, _, _ -> }
         )
         try {
-            search.searchBookIds("Author").toList()
+            search.searchRelated("Author").toList()
             org.junit.Assert.fail("Cancellation must propagate")
         } catch (error: kotlin.coroutines.cancellation.CancellationException) {
             org.junit.Assert.assertSame(cancelled, error)
@@ -203,7 +205,7 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `unrecognized linked pages emit errors on the first or a later page`() = runBlocking {
+    fun unrecognizedLinkedPagesEmitErrorsOnTheFirstOrALaterPage() = runBlocking {
         for (failedPage in listOf(1, 2)) {
             val requested = mutableListOf<String>()
             val page = LinovelibLinkedExpandedPageDataSource(
@@ -228,7 +230,7 @@ class LinovelibRelatedSearchTest {
                 result.await()
             }
             assertEquals(failedPage, requested.size)
-            assertEquals(failedPage - 1, results.count { it is SearchResult.SingleBook })
+            assertEquals(failedPage - 1, results.count { it is SearchResult.MultipleBook })
             assertTrue(results.none { it is SearchResult.Empty })
             assertTrue(results[results.lastIndex - 1] is SearchResult.Error)
             assertTrue(results.last() is SearchResult.End)
@@ -236,7 +238,7 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `wenku filters retain conditions when paging and reset when recollected`() = runBlocking {
+    fun wenkuFiltersRetainConditionsWhenPagingAndResetWhenRecollected() = runBlocking {
         val host = LinovelibUrls.HOST
         val filterSet = LinovelibWenkuFilters(host)
         val choices = filterSet.filters.map { it as SingleChoiceFilter }
@@ -302,12 +304,13 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `expanded related page searches current author or tag`() = runBlocking {
+    fun expandedRelatedPageSearchesCurrentAuthorOrTag() = runBlocking {
         val requested = mutableListOf<String>()
         val related = LinovelibRelatedExpandedPageDataSource(
             { keyword ->
                 requested += keyword
-                flowOf(SearchResult.SingleBook("3247"), SearchResult.End())
+                val summary = ParsedExploreBook("3247", "SAO", "川原礫", "").toParsedBookInformation()
+                flowOf(SearchResult.MultipleBook(summary.toMutableBookInformation()), SearchResult.End())
             },
             "\u4f5c\u8005\uff1a\u5ddd\u539f\u792b"
         )
@@ -319,42 +322,16 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun createsExpandedRouteFromCompileTimeApi3() {
-        val route = LinovelibRelatedNavigation.createExpandedRoute(javaClass.classLoader, "related-id")
-
-        assertEquals("related-id", route.javaClass.getMethod("getExpandedPageDataSourceId").invoke(route))
-    }
-
-    @Test
-    fun `missing api 3 route does not fall back to legacy host navigation`() {
-        val requestedClasses = mutableListOf<String>()
-        val missingHost = object : ClassLoader(null) {
-            override fun loadClass(name: String, resolve: Boolean): Class<*> {
-                requestedClasses += name
-                throw ClassNotFoundException(name)
-            }
-        }
-
-        assertThrows(ClassNotFoundException::class.java) {
-            LinovelibRelatedNavigation.createExpandedRoute(missingHost, "related-id")
-        }
-        assertEquals(listOf("io.nightfish.lightnovelreader.api.Route\$Main\$Explore\$Expanded"), requestedClasses)
-    }
-
-    @Test
-    fun `linked related page loads books from website tag url`() = runBlocking {
+    fun linkedRelatedPageReturnsWebsiteListFieldsWithoutFetchingDetails() = runBlocking {
         val requestedUrls = mutableListOf<String>()
+        val listHtml = checkNotNull(javaClass.getResourceAsStream("/html/list-title-3343.html"))
+            .bufferedReader().use { it.readText() }
         val page = LinovelibLinkedExpandedPageDataSource(
             displayTag = "\u79d1\u5e7b",
             targetUrl = "https://www.bilinovel.net/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html",
             htmlLoader = { url ->
                 requestedUrls += url
-                """
-                    <ol class="book-ol">
-                      <li class="book-li"><a class="book-layout" href="/novel/3247.html"><span class="book-title">SAO</span></a></li>
-                      <li class="book-li"><a class="book-layout" href="/novel/3768.html"><span class="book-title">Other</span></a></li>
-                    </ol>
-                """.trimIndent()
+                listHtml
             },
             parser = LinovelibHtmlParser(),
             metadata = LinovelibMetadataStore()
@@ -364,12 +341,17 @@ class LinovelibRelatedSearchTest {
 
         assertEquals(listOf("https://www.bilinovel.net/wenku/lastupdate_56_0_0_0_0_0_0_1_0.html"), requestedUrls)
         assertEquals("\u79d1\u5e7b", page.title)
-        assertEquals(listOf("3247", "3768"), results.filterIsInstance<SearchResult.SingleBook>().map { it.bookId })
+        val book = results.filterIsInstance<SearchResult.MultipleBook>().single().bookInformation
+        assertEquals("3343", book.id)
+        assertEquals("妹妹是不能当女友的，可是……", book.title)
+        assertEquals("镜游", book.author)
+        assertEquals("${LinovelibUrls.HOST}/files/article/image/3/3343/3343s.jpg", book.coverUri.toString())
+        assertTrue(book.description.startsWith("这是一段无论发生什么"))
         assertTrue(results.last() is SearchResult.End)
     }
 
     @Test
-    fun `linked related page loads and deduplicates the next page`() = runBlocking {
+    fun linkedRelatedPageLoadsAndDeduplicatesTheNextPage() = runBlocking {
         val requestedUrls = mutableListOf<String>()
         val page = LinovelibLinkedExpandedPageDataSource(
             displayTag = "\u79d1\u5e7b",
@@ -406,12 +388,12 @@ class LinovelibRelatedSearchTest {
         )
         assertEquals(
             listOf("3247", "3768", "4000"),
-            collected.filterIsInstance<SearchResult.SingleBook>().map { it.bookId }
+            collected.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id }
         )
     }
 
     @Test
-    fun `one load request skips a duplicate-only middle page`() = runBlocking {
+    fun oneLoadRequestSkipsADuplicateOnlyMiddlePage() = runBlocking {
         val requestedUrls = mutableListOf<String>()
         val page = LinovelibLinkedExpandedPageDataSource(
             displayTag = "\u79d1\u5e7b",
@@ -440,12 +422,12 @@ class LinovelibRelatedSearchTest {
         assertEquals(3, requestedUrls.size)
         assertEquals(
             listOf("3247", "4000"),
-            collected.filterIsInstance<SearchResult.SingleBook>().map { it.bookId }
+            collected.filterIsInstance<SearchResult.MultipleBook>().map { it.bookInformation.id }
         )
     }
 
     @Test
-    fun `empty first page does not scan later pages without results`() = runBlocking {
+    fun emptyFirstPageDoesNotScanLaterPagesWithoutResults() = runBlocking {
         val requestedUrls = mutableListOf<String>()
         val page = LinovelibLinkedExpandedPageDataSource(
             displayTag = "\u79d1\u5e7b",
@@ -466,7 +448,7 @@ class LinovelibRelatedSearchTest {
     }
 
     @Test
-    fun `explore provider uses linked page when metadata knows tag url`() {
+    fun exploreProviderUsesLinkedPageWhenMetadataKnowsTagUrl() {
         val parser = LinovelibHtmlParser()
         val metadata = LinovelibMetadataStore()
         parser.parseBookInformation(

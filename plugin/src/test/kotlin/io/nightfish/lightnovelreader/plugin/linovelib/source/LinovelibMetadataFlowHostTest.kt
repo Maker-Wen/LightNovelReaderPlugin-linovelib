@@ -1,7 +1,6 @@
 package io.nightfish.lightnovelreader.plugin.linovelib.source
 
 import io.nightfish.lightnovelreader.api.book.BookInformation
-import io.nightfish.lightnovelreader.api.book.MutableBookInformation
 import io.nightfish.lightnovelreader.api.web.search.SearchResult
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.toList
@@ -119,66 +118,39 @@ class LinovelibMetadataFlowHostTest {
     }
 
     @Test
-    fun searchEmitsEachBookOnceAndUpdatesTheSameDisplayedObjectAfterRefreshing() = runBlocking {
+    fun searchesRememberListSummariesWithoutRequestingDetails() = runBlocking {
         val metadata = LinovelibMetadataStore()
-        val requests = mutableListOf<String>()
-        val displayed = mutableListOf<MutableBookInformation>()
-        val provider = searchProvider(metadata, rows = row(1) + row(2), load = { url ->
-            assertEquals(2, displayed.size)
-            requests += url
-            if (url.endsWith("2.html")) error("Second detail unavailable")
-            detail("Fresh title")
-        })
-        provider.search(provider.searchTypes.single(), "query").collect { result ->
-            if (result is SearchResult.MultipleBook) {
-                // API 3 carries the mutable object itself, so callers see later updates.
-                val information = result.bookInformation as MutableBookInformation
-                assertEquals("Book ${displayed.size + 1}", information.title)
-                displayed += information
-            }
-        }
-        assertEquals(2, displayed.size)
-        assertEquals(listOf("Fresh title", "Book 2"), displayed.map { it.title })
-        assertEquals(2, requests.size)
-        assertEquals("Fresh title", metadata.bookInformation("1")?.title)
-        assertEquals("Book 2", metadata.fallbackBookInformation("2")?.title)
-        assertEquals("${LinovelibUrls.HOST}/author/a.html", metadata.relatedTarget("作者：Author"))
-    }
-
-    @Test
-    fun directAndRedirectedSearchesRegisterSuccessfulDetailsAndRejectInvalidOnes() = runBlocking {
-        listOf(false, true).forEach { redirected ->
-            val metadata = LinovelibMetadataStore()
-            var html = detail("Known")
-            val provider = testSearchProvider(
-                { html }, { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
-                LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata
-            )
-            val query = if (redirected) "query" else "1"
-            assertTrue(provider.search(provider.searchTypes.single(), query).toList().first() is SearchResult.MultipleBook)
-            html = detail("").replace("/author/a.html", "/author/invalid.html")
-            assertTrue(provider.search(provider.searchTypes.single(), query).toList().first() is SearchResult.SingleBook)
-            assertEquals("Known", metadata.bookInformation("1")?.title)
-            assertEquals("${LinovelibUrls.HOST}/author/a.html", metadata.relatedTarget("作者：Author"))
-        }
-    }
-
-    @Test
-    fun idOnlySearchRecordsListSummariesWithoutFetchingDetailsOrParsingRedirects() = runBlocking {
-        val metadata = LinovelibMetadataStore()
-        val provider = searchProvider(metadata, row(1)) { error("ID-only search must not request details") }
-        assertTrue(provider.searchBookIds("query").toList().first() is SearchResult.SingleBook)
-        assertEquals("Book 1", metadata.fallbackBookInformation("1")?.title)
-        assertNull(metadata.bookInformation("1"))
-        assertTrue(provider.searchBookIds("2").toList().first() is SearchResult.SingleBook)
-        assertNull(metadata.fallbackBookInformation("2"))
-        val redirect = testSearchProvider(
-            { error("Redirect already contains its result") },
-            { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/3.html", detail("Redirect")) },
-            LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata
+        val provider = testSearchProvider(
+            htmlLoader = { error("List search must not request details") },
+            searchHtmlLoader = { LinovelibHtmlResponse(it, row(1) + row(2)) },
+            metadata = metadata
         )
-        assertTrue(redirect.searchBookIds("query").toList().first() is SearchResult.SingleBook)
-        assertNull(metadata.bookInformation("3"))
+        val results = provider.search(provider.searchTypes.single(), "query").toList()
+
+        assertEquals(listOf("Book 1", "Book 2"), results.filterIsInstance<SearchResult.MultipleBook>()
+            .map { it.bookInformation.title })
+        assertEquals("Book 1", metadata.fallbackBookInformation("1")?.title)
+        assertEquals("Book 2", metadata.fallbackBookInformation("2")?.title)
+        assertNull(metadata.bookInformation("1"))
+    }
+
+    @Test
+    fun relatedSearchAcceptsRedirectHtmlAndRejectsInvalidRedirectWithoutEagerDetails() = runBlocking {
+        val metadata = LinovelibMetadataStore()
+        var html = detail("Known")
+        val provider = testSearchProvider(
+            { error("Redirect must not request details") },
+            { LinovelibHtmlResponse("${LinovelibUrls.HOST}/novel/1.html", html) },
+            metadata = metadata
+        )
+        val result = provider.searchRelated("query").toList().first() as SearchResult.MultipleBook
+        assertEquals("Known", result.bookInformation.title)
+        html = detail("").replace("/author/a.html", "/author/invalid.html")
+        val invalid = provider.searchRelated("query").toList()
+        assertTrue(invalid.first() is SearchResult.Error)
+        assertTrue(invalid.last() is SearchResult.End)
+        assertEquals("Known", metadata.bookInformation("1")?.title)
+        assertEquals("${LinovelibUrls.HOST}/author/a.html", metadata.relatedTarget("作者：Author"))
     }
 
     private fun exploreProvider(html: String, metadata: LinovelibMetadataStore) =
@@ -198,10 +170,6 @@ class LinovelibMetadataFlowHostTest {
             else -> """<ol class="book-ol">$books</ol>"""
         }
     }
-
-    private fun searchProvider(metadata: LinovelibMetadataStore, rows: String, load: suspend (String) -> String) =
-        testSearchProvider(load, { LinovelibHtmlResponse("${LinovelibUrls.HOST}/search.html", rows) },
-            LinovelibHtmlParser(), LinovelibDiagnostics { _, _, _, _ -> }, metadata = metadata)
 
     private fun row(id: Int) = """<a class="book-layout" href="/novel/$id.html"><span class="book-title">Book $id</span><span class="book-author"><svg class="icon icon-human"><title>作者</title><use xlink:href="#icon-human"></use></svg>Writer</span></a>"""
     private fun detail(title: String) = """<h1 class="book-title">$title</h1><span class="authorname"><a href="/author/a.html">Author</a></span>"""
